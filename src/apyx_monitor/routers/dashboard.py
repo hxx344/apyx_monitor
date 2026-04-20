@@ -5,13 +5,13 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 import re
 
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Form, Query
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlmodel import Session, select
 
-from ..config import get_asset_catalog
+from ..config import RuleDefinition, get_asset_catalog, get_rule_catalog
 from ..db import get_session
-from ..models import AlertEvent, MetricSnapshot
+from ..models import AlertEvent, AlertRuleOverride, MetricSnapshot, utc_now
 
 router = APIRouter(tags=["dashboard"])
 
@@ -51,6 +51,11 @@ CHART_DEFS = [
     },
 ]
 
+THRESHOLD_RULE_IDS = [
+    "morpho_pt_apyusd_usdc_available_borrow_floor",
+    "morpho_pt_apyusd_usdc_borrow_apy_ceiling",
+]
+
 
 def _format_value(metric_name: str, value: float | None) -> str:
     if value is None:
@@ -70,6 +75,21 @@ def _latest_metric_map(session: Session) -> dict[tuple[str, str], MetricSnapshot
         if key not in latest:
             latest[key] = row
     return latest
+
+
+def _effective_rule_map(session: Session) -> dict[str, RuleDefinition]:
+    override_map = {
+        row.rule_id: row
+        for row in session.exec(select(AlertRuleOverride)).all()
+    }
+    return {
+        rule.rule_id: (
+            rule.model_copy(update={"threshold": override_map[rule.rule_id].threshold})
+            if rule.rule_id in override_map
+            else rule
+        )
+        for rule in get_rule_catalog().rules
+    }
 
 
 def _bucket_series(
@@ -235,6 +255,61 @@ def _render_cards(latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
             '''
         )
     return "".join(cards)
+
+
+def _render_threshold_controls(
+        rule_map: dict[str, RuleDefinition],
+        latest_map: dict[tuple[str, str], MetricSnapshot],
+        hours: int,
+        threshold_updated: bool,
+) -> str:
+        operator_label = {"lt": "低于", "lte": "低于等于", "gt": "高于", "gte": "高于等于"}
+        rows = []
+        for rule_id in THRESHOLD_RULE_IDS:
+                rule = rule_map.get(rule_id)
+                if rule is None:
+                        continue
+                metric = latest_map.get((rule.entity_id, rule.metric_name))
+                current_value = metric.value if metric else None
+                input_step = "1000" if rule.metric_name.endswith("_usd") else "0.1"
+                input_min = "0"
+                unit_label = "USD" if rule.metric_name.endswith("_usd") else "%"
+                rows.append(
+                        f'''
+                        <form class="threshold-card" method="post" action="/dashboard/thresholds">
+                            <input type="hidden" name="rule_id" value="{escape(rule.rule_id)}" />
+                            <input type="hidden" name="hours" value="{hours}" />
+                            <div class="threshold-title">{escape(rule.description)}</div>
+                            <div class="threshold-meta">告警条件：当前值 {escape(operator_label.get(rule.comparator, rule.comparator))} 阈值时发送飞书</div>
+                            <div class="threshold-stats">
+                                <div><span>当前值</span><strong>{escape(_format_value(rule.metric_name, current_value))}</strong></div>
+                                <div><span>当前阈值</span><strong>{escape(_format_value(rule.metric_name, rule.threshold))}</strong></div>
+                            </div>
+                            <label class="threshold-input-group">
+                                <span>新阈值（{unit_label}）</span>
+                                <input name="threshold" type="number" min="{input_min}" step="{input_step}" value="{rule.threshold}" required />
+                            </label>
+                            <button type="submit">保存阈值</button>
+                        </form>
+                        '''
+                )
+
+        if not rows:
+                return ""
+
+        banner = '<div class="flash success">Morpho PT-apyUSD-18JUN2026/USDC 告警阈值已更新，后续采集会按新阈值触发飞书通知。</div>' if threshold_updated else ""
+        return f'''
+        <div class="panel full threshold-panel">
+            <div class="panel-head">
+                <h3>Morpho PT-apyUSD-18JUN2026/USDC · 飞书告警阈值</h3>
+                <div class="legend">
+                    <span class="legend-item">支持修改：可借款额下限、借款利率上限</span>
+                </div>
+            </div>
+            {banner}
+            <div class="threshold-grid">{"".join(rows)}</div>
+        </div>
+        '''
 
 
 def _render_charts(session: Session, hours: int) -> str:
@@ -449,12 +524,35 @@ def _render_morpho_market_table(latest_map: dict[tuple[str, str], MetricSnapshot
     return "".join(rows)
 
 
+@router.post("/dashboard/thresholds")
+def update_threshold(
+    rule_id: str = Form(...),
+    threshold: float = Form(...),
+    hours: int = Form(default=24),
+    session: Session = Depends(get_session),
+):
+    rule_map = _effective_rule_map(session)
+    if rule_id not in THRESHOLD_RULE_IDS or rule_id not in rule_map:
+        return RedirectResponse(url=f"/dashboard?hours={hours}", status_code=303)
+
+    override = session.exec(select(AlertRuleOverride).where(AlertRuleOverride.rule_id == rule_id)).first()
+    if override is None:
+        session.add(AlertRuleOverride(rule_id=rule_id, threshold=threshold, updated_at=utc_now()))
+    else:
+        override.threshold = threshold
+        override.updated_at = utc_now()
+    session.commit()
+    return RedirectResponse(url=f"/dashboard?hours={hours}&threshold_updated=1", status_code=303)
+
+
 @router.get("/dashboard", response_class=HTMLResponse)
 def dashboard(
     hours: int = Query(default=24, ge=1, le=24 * 30),
+    threshold_updated: int = Query(default=0),
     session: Session = Depends(get_session),
 ) -> str:
     latest_map = _latest_metric_map(session)
+    rule_map = _effective_rule_map(session)
     latest_run = max((row.recorded_at for row in latest_map.values()), default=None)
     status_text = latest_run.strftime("最近数据：%Y-%m-%d %H:%M UTC") if latest_run else "暂无数据"
     hour_options = "".join(
@@ -495,6 +593,18 @@ def dashboard(
     .card .value {{ font-size: 28px; font-weight: 700; margin-bottom: 4px; }}
     .card .meta {{ color: var(--muted); font-size: 12px; }}
     .grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }}
+    .threshold-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }}
+    .threshold-card {{ display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 16px; border: 1px solid rgba(148,163,184,0.16); background: rgba(15,23,42,0.45); }}
+    .threshold-title {{ font-size: 15px; font-weight: 700; }}
+    .threshold-meta {{ color: var(--muted); font-size: 12px; line-height: 1.5; }}
+    .threshold-stats {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }}
+    .threshold-stats div {{ padding: 12px; border-radius: 12px; background: rgba(15,23,42,0.55); border: 1px solid rgba(148,163,184,0.12); }}
+    .threshold-stats span {{ display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }}
+    .threshold-stats strong {{ font-size: 16px; }}
+    .threshold-input-group {{ display: flex; flex-direction: column; gap: 8px; color: var(--muted); font-size: 12px; }}
+    .threshold-input-group input {{ width: 100%; }}
+    .flash {{ margin-bottom: 14px; padding: 10px 12px; border-radius: 12px; font-size: 13px; }}
+    .flash.success {{ background: rgba(52, 211, 153, 0.12); border: 1px solid rgba(52, 211, 153, 0.28); color: #a7f3d0; }}
     .panel-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }}
     .panel-actions {{ display: flex; flex-direction: column; align-items: flex-end; gap: 10px; max-width: 72%; }}
     .panel h3 {{ margin: 0; font-size: 16px; }}
@@ -538,6 +648,7 @@ def dashboard(
         .empty.small {{ min-height: 180px; }}
     @media (max-width: 960px) {{
       .grid {{ grid-template-columns: 1fr; }}
+            .threshold-grid {{ grid-template-columns: 1fr; }}
             .morpho-market-row {{ grid-template-columns: 1fr; }}
       .header {{ flex-direction: column; align-items: flex-start; }}
       .panel-head {{ flex-direction: column; }}
@@ -563,6 +674,7 @@ def dashboard(
     <div class="cards">{_render_cards(latest_map)}</div>
 
     <div class="grid">
+            {_render_threshold_controls(rule_map, latest_map, hours, bool(threshold_updated))}
             {_render_charts(session, hours)}
             {_render_morpho_market_sections(session, latest_map, hours)}
             <div class="panel full">

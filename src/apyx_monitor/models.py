@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Column, Text
+from sqlalchemy import Column, Float, String, Text
 from sqlmodel import Field, SQLModel
 
 
@@ -42,3 +42,10 @@ class AlertEvent(SQLModel, table=True):
     resolved_at: Optional[datetime] = Field(default=None, index=True)
     notified_at: Optional[datetime] = Field(default=None)
     details_json: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+
+
+class AlertRuleOverride(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    rule_id: str = Field(sa_column=Column(String, unique=True, index=True, nullable=False))
+    threshold: float = Field(sa_column=Column(Float, nullable=False))
+    updated_at: datetime = Field(default_factory=utc_now, index=True)

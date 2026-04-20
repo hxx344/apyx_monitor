@@ -7,7 +7,7 @@ from typing import Callable
 from sqlmodel import Session, select
 
 from ..config import RuleCatalog, RuleDefinition
-from ..models import AlertEvent
+from ..models import AlertEvent, AlertRuleOverride
 from .alerting import FeishuNotifier
 
 
@@ -28,8 +28,9 @@ class RuleEngine:
     async def evaluate(self, session: Session, latest_metrics: dict[tuple[str, str], dict]) -> list[AlertEvent]:
         events: list[AlertEvent] = []
         now = datetime.now(timezone.utc)
+        rules = self._effective_rules(session)
 
-        for rule in self.catalog.rules:
+        for rule in rules:
             if not rule.enabled:
                 continue
             metric = latest_metrics.get((rule.entity_id, rule.metric_name))
@@ -59,6 +60,18 @@ class RuleEngine:
                     events.append(resolved)
 
         return events
+
+    def _effective_rules(self, session: Session) -> list[RuleDefinition]:
+        overrides = {
+            row.rule_id: row
+            for row in session.exec(select(AlertRuleOverride)).all()
+        }
+        return [
+            rule.model_copy(update={"threshold": overrides[rule.rule_id].threshold})
+            if rule.rule_id in overrides
+            else rule
+            for rule in self.catalog.rules
+        ]
 
     async def _fire_alert(
         self,
@@ -97,6 +110,7 @@ class RuleEngine:
             )
             return alert
 
+        active_alert.threshold = rule.threshold
         active_alert.current_value = float(metric["value"])
         active_alert.summary = summary
         active_alert.last_triggered_at = now
@@ -124,6 +138,7 @@ class RuleEngine:
         now: datetime,
     ) -> AlertEvent:
         active_alert.status = "resolved"
+        active_alert.threshold = rule.threshold
         active_alert.current_value = float(metric["value"])
         active_alert.summary = self._build_summary(rule, metric["value"], status="resolved")
         active_alert.resolved_at = now
