@@ -1,0 +1,88 @@
+rules:
+  - rule_id: apxusd_tvl_floor
+    description: apxUSD TVL 低于安全线
+    entity_id: apxusd
+    metric_name: tvl_usd
+    comparator: lt
+    threshold: 5000000
+    severity: P1
+    cooldown_seconds: 900
+    required_consecutive_hits: 1
+    enabled: true
+
+  - rule_id: apyusd_tvl_floor
+    description: apyUSD TVL 低于安全线
+    entity_id: apyusd
+    metric_name: tvl_usd
+    comparator: lt
+    threshold: 1000000
+    severity: P1
+    cooldown_seconds: 900
+    required_consecutive_hits: 1
+    enabled: true
+
+  - rule_id: apyusd_underlying_apy_floor
+    description: apyUSD 底层 APY 低于预期
+    entity_id: apyusd
+    metric_name: underlying_apy
+    comparator: lt
+    threshold: 6
+    severity: P2
+    cooldown_seconds: 1800
+    required_consecutive_hits: 1
+    enabled: true
+
+  - rule_id: yt_apxusd_price_floor
+    description: YT-apxUSD 价格过低
+    entity_id: yt-apxusd
+    metric_name: price_usd
+    comparator: lt
+    threshold: 0.015
+    severity: P2
+    cooldown_seconds: 1800
+    required_consecutive_hits: 1
+    enabled: true
+
+  - rule_id: yt_apyusd_price_floor
+    description: YT-apyUSD 价格过低
+    entity_id: yt-apyusd
+    metric_name: price_usd
+    comparator: lt
+    threshold: 0.015
+    severity: P2
+    cooldown_seconds: 1800
+    required_consecutive_hits: 1
+    enabled: true
+
+  - rule_id: morpho_available_borrow_floor
+    description: Morpho 可借款额过低
+    entity_id: morpho-apyusd-apxusd
+    metric_name: available_to_borrow_usd
+    comparator: lt
+    threshold: 250000
+    severity: P1
+    cooldown_seconds: 600
+    required_consecutive_hits: 1
+    enabled: true
+
+  - rule_id: morpho_borrow_apy_ceiling
+    description: Morpho 借款利率过高
+    entity_id: morpho-apyusd-apxusd
+    metric_name: borrow_apy
+    comparator: gt
+    threshold: 18
+    severity: P1
+    cooldown_seconds: 600
+    required_consecutive_hits: 1
+    enabled: true
+
+  - rule_id: morpho_utilization_ceiling
+    description: Morpho 利用率过高
+    entity_id: morpho-apyusd-apxusd
+    metric_name: utilization_pct
+    comparator: gt
+    threshold: 90
+    severity: P2
+    cooldown_seconds: 900
+    required_consecutive_hits: 1
+    enabled: true

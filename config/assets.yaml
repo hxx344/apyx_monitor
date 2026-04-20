@@ -1,0 +1,79 @@
+chains:
+  - chain: ethereum
+    chain_id: 1
+    rpc_url_env: ETHEREUM_RPC_URL
+    default_rpc_url: https://ethereum.publicnode.com
+  - chain: base
+    chain_id: 8453
+    rpc_url_env: BASE_RPC_URL
+    default_rpc_url: https://base.publicnode.com
+
+assets:
+  - asset_id: apxusd-ethereum
+    group_id: apxusd
+    symbol: apxUSD
+    kind: base
+    chain: ethereum
+    contract_address: "0x98A878b1Cd98131B271883B390f68D2c90674665"
+    decimals: 18
+    standard: erc20
+    price_hint_usd: 1.0
+    enabled: true
+  - asset_id: apxusd-base
+    group_id: apxusd
+    symbol: apxUSD
+    kind: base
+    chain: base
+    contract_address: "0xD993935E13851dd7517af10687EC7e5022127228"
+    decimals: 18
+    standard: erc20
+    price_hint_usd: 1.0
+    enabled: true
+  - asset_id: apyusd-ethereum
+    group_id: apyusd
+    symbol: apyUSD
+    kind: yield
+    chain: ethereum
+    contract_address: "0x38EEb52F0771140d10c4E9A9a72349A329Fe8a6A"
+    decimals: 18
+    standard: erc4626
+    price_hint_usd: 1.0
+    enabled: true
+  - asset_id: apyusd-base
+    group_id: apyusd
+    symbol: apyUSD
+    kind: yield
+    chain: base
+    contract_address: "0x2c271ddF484aC0386d216eB7eB9Ff02D4Dc0F6AA"
+    decimals: 18
+    standard: erc4626
+    price_hint_usd: 1.0
+    enabled: true
+
+pendle_markets:
+  - market_id: pendle-apxusd-18jun2026
+    label: YT-apxUSD-18JUN2026
+    market_address: "0x50dce085af29caba28f7308bea57c4043757b491"
+    chain_id: 1
+    underlying_asset_id: apxusd
+    yt_asset_id: yt-apxusd
+    enabled: true
+  - market_id: pendle-apyusd-18jun2026
+    label: YT-apyUSD-18JUN2026
+    market_address: "0x3c53fae231ad3c0408a8b6d33138bbff1caec330"
+    chain_id: 1
+    underlying_asset_id: apyusd
+    yt_asset_id: yt-apyusd
+    enabled: true
+
+morpho_markets:
+  - market_id: morpho-apyusd-apxusd
+    label: Morpho apyUSD/apxUSD
+    unique_key: "0xe23380494e365453f72f736f2d941959ae945773eb67a06cf4f538c7c4201264"
+    chain_id: 1
+    enabled: true
+  - market_id: morpho-pt-apyusd-usdc
+    label: Morpho PT-apyUSD-18JUN2026/USDC
+    unique_key: "0xa75bb490ecfee90c86a9d22ebc2dde42fb83478b3f18722b9fc6f5f668cab124"
+    chain_id: 1
+    enabled: true

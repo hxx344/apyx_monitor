@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apyx-monitor"
+version = "0.1.0"
+description = "APYX MVP monitoring service for APYX, Pendle YT and Morpho markets"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "GitHub Copilot" }]
+dependencies = [
+  "apscheduler>=3.11.0",
+  "fastapi>=0.116.0",
+  "httpx>=0.28.0",
+  "pydantic-settings>=2.10.0",
+  "PyYAML>=6.0.2",
+  "sqlmodel>=0.0.24",
+  "uvicorn[standard]>=0.35.0",
+  "web3>=7.13.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "ruff>=0.12.0"
+]
+
+[project.scripts]
+apyx-monitor = "apyx_monitor.main:run"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B"]
