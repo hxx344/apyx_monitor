@@ -31,7 +31,7 @@
 
 ## Morpho 市场
 - apyUSD/apxUSD uniqueKey: `0xe23380494e365453f72f736f2d941959ae945773eb67a06cf4f538c7c4201264`
-- PT-apyUSD-18JUN2026/USDC uniqueKey: `0xa75bb490ecfee90c86a9d22ebc2dde42fb83478b3f18722b9fc6f5f668cab124`
+- apyUSD/USDC uniqueKey: `0x9c28c8fa039a8df548a7f27adf062d751b0f2e9b9131931810535543adb23291`
 - GraphQL: `https://api.morpho.org/graphql`
 
 关键字段：

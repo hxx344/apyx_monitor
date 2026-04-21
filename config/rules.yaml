@@ -87,23 +87,23 @@ rules:
     required_consecutive_hits: 1
     enabled: true
 
-  - rule_id: morpho_pt_apyusd_usdc_available_borrow_floor
-    description: Morpho PT-apyUSD-18JUN2026/USDC 可借款额过低
-    entity_id: morpho-pt-apyusd-usdc
+  - rule_id: morpho_apyusd_usdc_available_borrow_floor
+    description: Morpho apyUSD/USDC 可借款额过低
+    entity_id: morpho-apyusd-usdc
     metric_name: available_to_borrow_usd
     comparator: lt
-    threshold: 1500000
+    threshold: 25000
     severity: P1
     cooldown_seconds: 600
     required_consecutive_hits: 1
     enabled: true
 
-  - rule_id: morpho_pt_apyusd_usdc_borrow_apy_ceiling
-    description: Morpho PT-apyUSD-18JUN2026/USDC 借款利率过高
-    entity_id: morpho-pt-apyusd-usdc
+  - rule_id: morpho_apyusd_usdc_borrow_apy_ceiling
+    description: Morpho apyUSD/USDC 借款利率过高
+    entity_id: morpho-apyusd-usdc
     metric_name: borrow_apy
     comparator: gt
-    threshold: 8
+    threshold: 4
     severity: P1
     cooldown_seconds: 600
     required_consecutive_hits: 1

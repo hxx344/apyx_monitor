@@ -72,8 +72,8 @@ morpho_markets:
     unique_key: "0xe23380494e365453f72f736f2d941959ae945773eb67a06cf4f538c7c4201264"
     chain_id: 1
     enabled: true
-  - market_id: morpho-pt-apyusd-usdc
-    label: Morpho PT-apyUSD-18JUN2026/USDC
-    unique_key: "0xa75bb490ecfee90c86a9d22ebc2dde42fb83478b3f18722b9fc6f5f668cab124"
+  - market_id: morpho-apyusd-usdc
+    label: Morpho apyUSD/USDC
+    unique_key: "0x9c28c8fa039a8df548a7f27adf062d751b0f2e9b9131931810535543adb23291"
     chain_id: 1
     enabled: true

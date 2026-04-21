@@ -22,7 +22,7 @@ CARD_DEFS = [
     {"entity_id": "yt-apxusd", "metric_name": "implied_apy", "label": "YT-apxUSD 隐含 APY"},
     {"entity_id": "yt-apyusd", "metric_name": "implied_apy", "label": "YT-apyUSD 隐含 APY"},
     {"entity_id": "morpho-apyusd-apxusd", "metric_name": "available_to_borrow_usd", "label": "Morpho 可借款额"},
-    {"entity_id": "morpho-pt-apyusd-usdc", "metric_name": "available_to_borrow_usd", "label": "PT-apyUSD/USDC 可借款额"},
+    {"entity_id": "morpho-apyusd-usdc", "metric_name": "available_to_borrow_usd", "label": "apyUSD/USDC 可借款额"},
 ]
 
 MORPHO_MARKETS = [market for market in get_asset_catalog().morpho_markets if market.enabled]
@@ -52,8 +52,8 @@ CHART_DEFS = [
 ]
 
 THRESHOLD_RULE_IDS = [
-    "morpho_pt_apyusd_usdc_available_borrow_floor",
-    "morpho_pt_apyusd_usdc_borrow_apy_ceiling",
+    "morpho_apyusd_usdc_available_borrow_floor",
+    "morpho_apyusd_usdc_borrow_apy_ceiling",
 ]
 
 
@@ -297,11 +297,11 @@ def _render_threshold_controls(
         if not rows:
                 return ""
 
-        banner = '<div class="flash success">Morpho PT-apyUSD-18JUN2026/USDC 告警阈值已更新，后续采集会按新阈值触发飞书通知。</div>' if threshold_updated else ""
+        banner = '<div class="flash success">Morpho apyUSD/USDC 告警阈值已更新，后续采集会按新阈值触发飞书通知。</div>' if threshold_updated else ""
         return f'''
         <div class="panel full threshold-panel">
             <div class="panel-head">
-                <h3>Morpho PT-apyUSD-18JUN2026/USDC · 飞书告警阈值</h3>
+                <h3>Morpho apyUSD/USDC · 飞书告警阈值</h3>
                 <div class="legend">
                     <span class="legend-item">支持修改：可借款额下限、借款利率上限</span>
                 </div>

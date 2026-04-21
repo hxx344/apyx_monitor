@@ -23,6 +23,7 @@
   - `0x3c53fae231ad3c0408a8b6d33138bbff1caec330` (`YT-apyUSD-18JUN2026`)
 - Ethereum 上 Morpho 市场
   - `0xe23380494e365453f72f736f2d941959ae945773eb67a06cf4f538c7c4201264` (`apyUSD/apxUSD`)
+  - `0x9c28c8fa039a8df548a7f27adf062d751b0f2e9b9131931810535543adb23291` (`apyUSD/USDC`)
 
 ## 快速启动
 

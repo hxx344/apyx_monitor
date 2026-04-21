@@ -117,9 +117,10 @@ class RuleEngine:
         active_alert.occurrences += 1
         active_alert.details_json = details_json
 
+        last_notified_at = self._ensure_aware(active_alert.notified_at)
         should_remind = (
-            active_alert.notified_at is None
-            or now - active_alert.notified_at >= timedelta(seconds=rule.cooldown_seconds)
+            last_notified_at is None
+            or now - last_notified_at >= timedelta(seconds=rule.cooldown_seconds)
         )
         if should_remind:
             await self.notifier.notify(
@@ -160,3 +161,11 @@ class RuleEngine:
             f"当前值: {current_value:.6f}\n"
             f"条件: {operator_map[rule.comparator]} {rule.threshold}"
         )
+
+    @staticmethod
+    def _ensure_aware(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
