@@ -40,8 +40,44 @@ ERC4626_ABI = ERC20_ABI + [
         "payable": False,
         "stateMutability": "view",
         "type": "function",
+    },
+    {
+        "constant": True,
+        "inputs": [{"name": "shares", "type": "uint256"}],
+        "name": "convertToAssets",
+        "outputs": [{"name": "assets", "type": "uint256"}],
+        "payable": False,
+        "stateMutability": "view",
+        "type": "function",
     }
 ]
+
+CHAINLINK_FEED_ABI = [
+    {
+        "inputs": [],
+        "name": "decimals",
+        "outputs": [{"name": "", "type": "uint8"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "latestRoundData",
+        "outputs": [
+            {"name": "roundId", "type": "uint80"},
+            {"name": "answer", "type": "int256"},
+            {"name": "startedAt", "type": "uint256"},
+            {"name": "updatedAt", "type": "uint256"},
+            {"name": "answeredInRound", "type": "uint80"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+]
+
+APYUSD_ETHEREUM_ASSET_ID = "apyusd-ethereum"
+MORPHO_APYUSD_USDC_MARKET_ID = "morpho-apyusd-usdc"
+APYX_CAPPED_COLLATERALIZATION_RATIO_FEED = "0x2037a5Eb67aa9B2FBF50042B724D8c4dB80F23b4"
 
 
 logger = logging.getLogger(__name__)
@@ -95,6 +131,24 @@ class OnChainCollector(BaseCollector):
                         fallback_used = True
                     nav = float(total_assets / total_supply) if total_supply else 0.0
                     tvl_usd = float(total_assets * asset.price_hint_usd)
+                    if asset.asset_id == APYUSD_ETHEREUM_ASSET_ID:
+                        convert_to_assets = contract.functions.convertToAssets(10 ** asset.decimals).call() / 10 ** asset.decimals
+                        metrics.append(
+                            MetricPoint(
+                                entity_id=asset.asset_id,
+                                entity_type="asset",
+                                metric_name="convert_to_assets",
+                                value=float(convert_to_assets),
+                                unit="assets_per_share",
+                                source=f"rpc:{asset.chain}",
+                                recorded_at=recorded_at,
+                                details={
+                                    "group_id": asset.group_id,
+                                    "address": asset.contract_address,
+                                    "sample_shares": 10 ** asset.decimals,
+                                },
+                            )
+                        )
                     metrics.extend(
                         [
                             MetricPoint(
@@ -173,6 +227,35 @@ class OnChainCollector(BaseCollector):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("onchain asset %s failed: %s", asset.asset_id, exc)
                 continue
+
+        try:
+            ethereum_chain = chain_map["ethereum"]
+            web3 = self._get_provider("ethereum", ethereum_chain.resolve_rpc_url())
+            ratio_feed = web3.eth.contract(
+                address=Web3.to_checksum_address(APYX_CAPPED_COLLATERALIZATION_RATIO_FEED),
+                abi=CHAINLINK_FEED_ABI,
+            )
+            decimals = ratio_feed.functions.decimals().call()
+            latest_round = ratio_feed.functions.latestRoundData().call()
+            ratio_value = float(latest_round[1] / 10 ** decimals)
+            metrics.append(
+                MetricPoint(
+                    entity_id=MORPHO_APYUSD_USDC_MARKET_ID,
+                    entity_type="market",
+                    metric_name="capped_collateralization_ratio",
+                    value=ratio_value,
+                    unit="ratio",
+                    source="rpc:ethereum",
+                    recorded_at=recorded_at,
+                    details={
+                        "feed_address": APYX_CAPPED_COLLATERALIZATION_RATIO_FEED,
+                        "updated_at": int(latest_round[3]),
+                        "answered_in_round": int(latest_round[4]),
+                    },
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("onchain feed %s failed: %s", APYX_CAPPED_COLLATERALIZATION_RATIO_FEED, exc)
 
         for group_id, values in aggregates.items():
             total_supply = values.get("total_supply", 0.0)

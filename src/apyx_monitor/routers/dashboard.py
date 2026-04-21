@@ -19,6 +19,8 @@ CARD_DEFS = [
     {"entity_id": "apxusd", "metric_name": "tvl_usd", "label": "apxUSD TVL"},
     {"entity_id": "apyusd", "metric_name": "tvl_usd", "label": "apyUSD TVL"},
     {"entity_id": "apyusd", "metric_name": "underlying_apy", "label": "apyUSD 底层 APY"},
+    {"entity_id": "apyusd-ethereum", "metric_name": "convert_to_assets", "label": "apyUSD convertToAssets()"},
+    {"entity_id": "morpho-apyusd-usdc", "metric_name": "capped_collateralization_ratio", "label": "Apyx Capped Ratio"},
     {"entity_id": "yt-apxusd", "metric_name": "implied_apy", "label": "YT-apxUSD 隐含 APY"},
     {"entity_id": "yt-apyusd", "metric_name": "implied_apy", "label": "YT-apyUSD 隐含 APY"},
     {"entity_id": "morpho-apyusd-apxusd", "metric_name": "available_to_borrow_usd", "label": "Morpho 可借款额"},
@@ -49,6 +51,18 @@ CHART_DEFS = [
             {"entity_id": "yt-apyusd", "metric_name": "implied_apy", "label": "YT-apyUSD 隐含 APY", "color": "#fb7185"},
         ],
     },
+    {
+        "title": "apyUSD convertToAssets() 趋势",
+        "series": [
+            {"entity_id": "apyusd-ethereum", "metric_name": "convert_to_assets", "label": "1 apyUSD → apxUSD", "color": "#22c55e"},
+        ],
+    },
+    {
+        "title": "Apyx Capped Collateralization Ratio 趋势",
+        "series": [
+            {"entity_id": "morpho-apyusd-usdc", "metric_name": "capped_collateralization_ratio", "label": "Capped Ratio", "color": "#38bdf8"},
+        ],
+    },
 ]
 
 THRESHOLD_RULE_IDS = [
@@ -60,6 +74,10 @@ THRESHOLD_RULE_IDS = [
 def _format_value(metric_name: str, value: float | None) -> str:
     if value is None:
         return "-"
+    if metric_name == "convert_to_assets":
+        return f"{value:.6f} apxUSD"
+    if metric_name.endswith("_ratio"):
+        return f"{value:.4f}x"
     if metric_name.endswith("_usd") or metric_name == "price_usd":
         return f"${value:,.0f}" if abs(value) >= 100 else f"${value:,.4f}"
     if metric_name.endswith("_apy") or metric_name.endswith("_pct"):
