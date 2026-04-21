@@ -15,6 +15,8 @@ from ..models import AlertEvent, AlertRuleOverride, MetricSnapshot, utc_now
 
 router = APIRouter(tags=["dashboard"])
 
+BEIJING_TZ = timezone(timedelta(hours=8))
+
 CARD_DEFS = [
     {"entity_id": "apxusd", "metric_name": "tvl_usd", "label": "apxUSD TVL"},
     {"entity_id": "apyusd", "metric_name": "tvl_usd", "label": "apyUSD TVL"},
@@ -93,6 +95,16 @@ def _latest_metric_map(session: Session) -> dict[tuple[str, str], MetricSnapshot
         if key not in latest:
             latest[key] = row
     return latest
+
+
+def _to_beijing(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(BEIJING_TZ)
+
+
+def _format_dt(dt: datetime, pattern: str = "%Y-%m-%d %H:%M") -> str:
+    return _to_beijing(dt).strftime(pattern)
 
 
 def _effective_rule_map(session: Session) -> dict[str, RuleDefinition]:
@@ -204,7 +216,7 @@ def _build_svg(series_list: list[dict], chart_id: str, width: int = 760, height:
             y = padding_top + plot_height * (1 - ratio)
             path_commands.append(f'{"M" if not path_commands else "L"} {x:.2f} {y:.2f}')
             area_commands.append(f'{"M" if not area_commands else "L"} {x:.2f} {y:.2f}')
-            active_points.append((x, y, timestamp.strftime("%m-%d %H:%M"), _format_value(series["metric_name"], value)))
+            active_points.append((x, y, _format_dt(timestamp, "%m-%d %H:%M"), _format_value(series["metric_name"], value)))
         d_attr = " ".join(path_commands)
         if not d_attr:
             continue
@@ -224,7 +236,7 @@ def _build_svg(series_list: list[dict], chart_id: str, width: int = 760, height:
         if index not in {0, len(all_timestamps) // 2, len(all_timestamps) - 1}:
             continue
         x = padding_left + step_x * index
-        label = timestamp.strftime("%m-%d %H:%M")
+        label = _format_dt(timestamp, "%m-%d %H:%M")
         x_labels.append(
             f'<text x="{x:.1f}" y="{height - 6}" text-anchor="middle" fill="#94a3b8" font-size="11">{label}</text>'
         )
@@ -249,7 +261,7 @@ def _build_chart_table(series_list: list[dict], limit: int = 12) -> str:
     header = ["<th>时间</th>"] + [f"<th>{escape(series['label'])}</th>" for series in valid_series]
     rows = []
     for timestamp in timestamps:
-        cells = [f"<td>{escape(timestamp.strftime('%m-%d %H:%M'))}</td>"]
+        cells = [f"<td>{escape(_format_dt(timestamp, '%m-%d %H:%M'))}</td>"]
         for series in valid_series:
             point_map = {point_timestamp: value for point_timestamp, value in series["points"]}
             cells.append(f"<td>{escape(_format_value(series['metric_name'], point_map.get(timestamp)))}</td>")
@@ -262,7 +274,7 @@ def _render_cards(latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
     for item in CARD_DEFS:
         metric = latest_map.get((item["entity_id"], item["metric_name"]))
         value = _format_value(item["metric_name"], metric.value if metric else None)
-        recorded_at = metric.recorded_at.strftime("%Y-%m-%d %H:%M UTC") if metric else "-"
+        recorded_at = f"{_format_dt(metric.recorded_at)} 北京时间" if metric else "-"
         cards.append(
             f'''
             <div class="card">
@@ -392,7 +404,7 @@ def _render_alerts(session: Session) -> str:
               <td>{escape(alert.metric_name)}</td>
               <td>{escape(_format_value(alert.metric_name, alert.current_value))}</td>
               <td>{escape(alert.summary)}</td>
-              <td>{escape(alert.last_triggered_at.strftime("%Y-%m-%d %H:%M UTC"))}</td>
+              <td>{escape(f"{_format_dt(alert.last_triggered_at)} 北京时间")}</td>
             </tr>
             '''
         )
@@ -420,7 +432,7 @@ def _render_morpho_history_table(
         rows = []
         ordered_timestamps = sorted(timestamps, reverse=True)[:limit]
         for timestamp in ordered_timestamps:
-                cells = [f"<td>{escape(timestamp.strftime('%m-%d %H:%M'))}</td>"]
+                cells = [f"<td>{escape(_format_dt(timestamp, '%m-%d %H:%M'))}</td>"]
                 for metric_name in metrics:
                         value = series_map.get(metric_name, {}).get(timestamp)
                         cells.append(f"<td>{escape(_format_value(metric_name, value))}</td>")
@@ -535,7 +547,7 @@ def _render_morpho_market_table(latest_map: dict[tuple[str, str], MetricSnapshot
               <td>{escape(_format_value("utilization_pct", utilization.value if utilization else None))}</td>
               <td>{escape(_format_value("supply_assets_usd", supply_usd.value if supply_usd else None))}</td>
               <td>{escape(_format_value("borrow_assets_usd", borrow_usd.value if borrow_usd else None))}</td>
-              <td>{escape(updated_at.strftime("%Y-%m-%d %H:%M UTC") if updated_at else "-")}</td>
+              <td>{escape(f"{_format_dt(updated_at)} 北京时间" if updated_at else "-")}</td>
             </tr>
             '''
         )
@@ -572,7 +584,7 @@ def dashboard(
     latest_map = _latest_metric_map(session)
     rule_map = _effective_rule_map(session)
     latest_run = max((row.recorded_at for row in latest_map.values()), default=None)
-    status_text = latest_run.strftime("最近数据：%Y-%m-%d %H:%M UTC") if latest_run else "暂无数据"
+    status_text = f"最近数据：{_format_dt(latest_run)} 北京时间" if latest_run else "暂无数据"
     hour_options = "".join(
         f'<option value="{value}" {"selected" if value == hours else ""}>近 {label}</option>'
         for value, label in ((6, "6 小时"), (24, "24 小时"), (72, "72 小时"), (168, "7 天"))
