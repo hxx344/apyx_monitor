@@ -103,6 +103,12 @@ def _to_beijing(dt: datetime) -> datetime:
     return dt.astimezone(BEIJING_TZ)
 
 
+def _ensure_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _format_dt(dt: datetime, pattern: str = "%Y-%m-%d %H:%M") -> str:
     return _to_beijing(dt).strftime(pattern)
 
@@ -139,8 +145,9 @@ def _bucket_series(
     ).all()
     buckets: dict[datetime, list[MetricSnapshot]] = defaultdict(list)
     interval_seconds = bucket_minutes * 60
-    for row in sorted(rows, key=lambda item: item.recorded_at):
-        bucket_ts = int(row.recorded_at.timestamp() // interval_seconds * interval_seconds)
+    for row in sorted(rows, key=lambda item: _ensure_utc(item.recorded_at)):
+        recorded_at = _ensure_utc(row.recorded_at)
+        bucket_ts = int(recorded_at.timestamp() // interval_seconds * interval_seconds)
         bucket_at = datetime.fromtimestamp(bucket_ts, tz=timezone.utc)
         buckets[bucket_at].append(row)
     return [(bucket_at, bucket_rows[-1].value) for bucket_at, bucket_rows in sorted(buckets.items())]
