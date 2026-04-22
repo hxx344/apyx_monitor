@@ -4,8 +4,10 @@
 
 - `apxUSD` / `apyUSD` 的 TVL 与基础链上指标
 - `yt-apxUSD` / `yt-apyUSD` 的 Pendle 隐含 APY 与相关市场指标
+- Curve `apyUSD/apxUSD` 池子的实时兑换汇率
 - Morpho 市场的可借款额、借款利率、利用率
 - 阈值触发后的飞书机器人告警
+- Curve 汇率偏离净值告警、Apyx Capped Ratio 脱锚告警
 - FastAPI 查询接口与本地 SQLite 持久化
 
 ## MVP 方案
@@ -15,6 +17,8 @@
 - Pendle REST：YT 价格、隐含 APY、流动性、基础资产价格
 - Morpho GraphQL：可借款额、借款利率、供给/借款、利用率
 - 链上 RPC：`apxUSD` / `apyUSD` 的 `totalSupply` / `totalAssets`
+- 链上 RPC：Curve 池 `get_dy(apyUSD -> apxUSD, 1e18)` 实时汇率
+- 链上派生：Curve 汇率相对 `convertToAssets()` 的偏离幅度、Capped Ratio 相对 1.0 的脱锚幅度
 
 ### 当前默认监控对象
 - Ethereum + Base 上的 `apxUSD`、`apyUSD`
@@ -24,6 +28,8 @@
 - Ethereum 上 Morpho 市场
   - `0xe23380494e365453f72f736f2d941959ae945773eb67a06cf4f538c7c4201264` (`apyUSD/apxUSD`)
   - `0x9c28c8fa039a8df548a7f27adf062d751b0f2e9b9131931810535543adb23291` (`apyUSD/USDC`)
+- Ethereum 上 Curve 池
+  - `0xe41be7b340f7c2eda4da1e99b42ee1b228b526b7` (`apyUSD/apxUSD`)
 
 ## 快速启动
 
@@ -56,4 +62,7 @@ uvicorn apyx_monitor.main:app --reload
 - `apxUSD` / `apyUSD` 的 APY 在官方站点存在反爬，MVP 默认优先用 Pendle 市场中的 `underlyingApy` 作为可程序化替代来源。
 - `apyUSD` 作为 ERC-4626 vault，TVL 采用 `totalAssets` 近似，NAV 采用 `totalAssets / totalSupply`。
 - 默认规则仅为示例值，正式环境需按业务重新标定。
-- 已新增简单看板，可查看 TVL、底层 APY、YT 隐含 APY 和 Morpho 指标历史趋势。
+- 已新增简单看板，可查看 TVL、底层 APY、YT 隐含 APY、Curve 汇率和 Morpho 指标历史趋势。
+- 默认新增两类风险告警：
+  - Curve `apyUSD/apxUSD` 汇率相对 `apyUSD.convertToAssets()` 偏离超过 `1%`
+  - `Apyx Capped Ratio` 相对 `1.0` 脱锚超过 `0.5%`

@@ -77,3 +77,12 @@ morpho_markets:
     unique_key: "0x9c28c8fa039a8df548a7f27adf062d751b0f2e9b9131931810535543adb23291"
     chain_id: 1
     enabled: true
+
+curve_pools:
+  - pool_id: curve-apyusd-apxusd
+    label: Curve apyUSD/apxUSD
+    chain: ethereum
+    contract_address: "0xe41be7b340f7c2eda4da1e99b42ee1b228b526b7"
+    token_in_asset_id: apyusd-ethereum
+    token_out_asset_id: apxusd-ethereum
+    enabled: true

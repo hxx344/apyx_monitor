@@ -43,6 +43,17 @@
 - `state.supplyAssetsUsd`
 - `state.utilization`
 
+## Curve 池
+- apyUSD/apxUSD pool: `0xe41be7b340f7c2eda4da1e99b42ee1b228b526b7`
+- 数据方式：Ethereum RPC 直接调用池合约
+
+关键字段：
+- `coins(0)` / `coins(1)`
+- `get_dy(0, 1, 1e18)`
+
+当前口径：
+- `Curve apyUSD/apxUSD exchange_rate`: `1 apyUSD` 在池内实时可兑换得到多少 `apxUSD`
+
 ## APYX 协议说明
 - `apyUSD` 为 ERC-4626 tokenized vault
 - 文档提到 NAV dashboard，但未发现稳定公开 API
@@ -54,5 +65,6 @@
 - `apyUSD NAV`: `totalAssets / totalSupply`
 - `yt-* price`: Pendle `yt.price.usd`
 - `underlying APY`: Pendle `underlyingApy`
+- `Curve exchange_rate`: Curve pool `get_dy(apyUSD -> apxUSD, 1e18)`
 - `Morpho available_to_borrow_usd`: `state.liquidityAssetsUsd`
 - `Morpho borrow_apy`: `state.borrowApy`

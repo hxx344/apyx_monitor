@@ -75,11 +75,22 @@ class MorphoMarketDefinition(BaseModel):
     enabled: bool = True
 
 
+class CurvePoolDefinition(BaseModel):
+    pool_id: str
+    label: str
+    chain: str
+    contract_address: str
+    token_in_asset_id: str
+    token_out_asset_id: str
+    enabled: bool = True
+
+
 class AssetCatalog(BaseModel):
     chains: list[ChainDefinition]
     assets: list[AssetDefinition]
     pendle_markets: list[PendleMarketDefinition]
     morpho_markets: list[MorphoMarketDefinition]
+    curve_pools: list[CurvePoolDefinition] = []
 
     def chain_map(self) -> dict[str, ChainDefinition]:
         return {chain.chain: chain for chain in self.chains}

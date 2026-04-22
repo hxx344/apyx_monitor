@@ -108,3 +108,25 @@ rules:
     cooldown_seconds: 600
     required_consecutive_hits: 1
     enabled: true
+
+  - rule_id: curve_apyusd_apxusd_rate_deviation_ceiling
+    description: Curve apyUSD/apxUSD 汇率偏离净值过大
+    entity_id: curve-apyusd-apxusd
+    metric_name: curve_rate_vs_nav_deviation_pct
+    comparator: gt
+    threshold: 1.0
+    severity: P1
+    cooldown_seconds: 600
+    required_consecutive_hits: 1
+    enabled: true
+
+  - rule_id: apyx_capped_ratio_deviation_ceiling
+    description: Apyx Capped Ratio 脱锚
+    entity_id: morpho-apyusd-usdc
+    metric_name: capped_collateralization_ratio_deviation_pct
+    comparator: gt
+    threshold: 0.5
+    severity: P1
+    cooldown_seconds: 600
+    required_consecutive_hits: 1
+    enabled: true

@@ -22,7 +22,10 @@ CARD_DEFS = [
     {"entity_id": "apyusd", "metric_name": "tvl_usd", "label": "apyUSD TVL"},
     {"entity_id": "apyusd", "metric_name": "underlying_apy", "label": "apyUSD 底层 APY"},
     {"entity_id": "apyusd-ethereum", "metric_name": "convert_to_assets", "label": "apyUSD convertToAssets()"},
+    {"entity_id": "curve-apyusd-apxusd", "metric_name": "exchange_rate", "label": "Curve 1 apyUSD → apxUSD"},
+    {"entity_id": "curve-apyusd-apxusd", "metric_name": "curve_rate_vs_nav_deviation_pct", "label": "Curve 偏离净值"},
     {"entity_id": "morpho-apyusd-usdc", "metric_name": "capped_collateralization_ratio", "label": "Apyx Capped Ratio"},
+    {"entity_id": "morpho-apyusd-usdc", "metric_name": "capped_collateralization_ratio_deviation_pct", "label": "Capped Ratio 脱锚幅度"},
     {"entity_id": "yt-apxusd", "metric_name": "implied_apy", "label": "YT-apxUSD 隐含 APY"},
     {"entity_id": "yt-apyusd", "metric_name": "implied_apy", "label": "YT-apyUSD 隐含 APY"},
     {"entity_id": "morpho-apyusd-apxusd", "metric_name": "available_to_borrow_usd", "label": "Morpho 可借款额"},
@@ -60,6 +63,19 @@ CHART_DEFS = [
         ],
     },
     {
+        "title": "Curve apyUSD/apxUSD 汇率趋势",
+        "series": [
+            {"entity_id": "curve-apyusd-apxusd", "metric_name": "exchange_rate", "label": "Curve 1 apyUSD → apxUSD", "color": "#14b8a6"},
+        ],
+    },
+    {
+        "title": "偏离度趋势",
+        "series": [
+            {"entity_id": "curve-apyusd-apxusd", "metric_name": "curve_rate_vs_nav_deviation_pct", "label": "Curve 偏离净值", "color": "#f97316"},
+            {"entity_id": "morpho-apyusd-usdc", "metric_name": "capped_collateralization_ratio_deviation_pct", "label": "Capped Ratio 脱锚幅度", "color": "#ef4444"},
+        ],
+    },
+    {
         "title": "Apyx Capped Collateralization Ratio 趋势",
         "series": [
             {"entity_id": "morpho-apyusd-usdc", "metric_name": "capped_collateralization_ratio", "label": "Capped Ratio", "color": "#38bdf8"},
@@ -70,6 +86,8 @@ CHART_DEFS = [
 THRESHOLD_RULE_IDS = [
     "morpho_apyusd_usdc_available_borrow_floor",
     "morpho_apyusd_usdc_borrow_apy_ceiling",
+    "curve_apyusd_apxusd_rate_deviation_ceiling",
+    "apyx_capped_ratio_deviation_ceiling",
 ]
 
 
@@ -78,6 +96,8 @@ def _format_value(metric_name: str, value: float | None) -> str:
         return "-"
     if metric_name == "convert_to_assets":
         return f"{value:.6f} apxUSD"
+    if metric_name == "exchange_rate":
+        return f"{value:.6f}"
     if metric_name.endswith("_ratio"):
         return f"{value:.4f}x"
     if metric_name.endswith("_usd") or metric_name == "price_usd":
@@ -334,13 +354,13 @@ def _render_threshold_controls(
         if not rows:
                 return ""
 
-        banner = '<div class="flash success">Morpho apyUSD/USDC 告警阈值已更新，后续采集会按新阈值触发飞书通知。</div>' if threshold_updated else ""
+        banner = '<div class="flash success">风险告警阈值已更新，后续采集会按新阈值触发飞书通知。</div>' if threshold_updated else ""
         return f'''
         <div class="panel full threshold-panel">
             <div class="panel-head">
-                <h3>Morpho apyUSD/USDC · 飞书告警阈值</h3>
+                <h3>风险监控 · 飞书告警阈值</h3>
                 <div class="legend">
-                    <span class="legend-item">支持修改：可借款额下限、借款利率上限</span>
+                    <span class="legend-item">支持修改：可借款额、借款利率、Curve 偏离净值、Capped Ratio 脱锚</span>
                 </div>
             </div>
             {banner}
