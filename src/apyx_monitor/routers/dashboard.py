@@ -28,7 +28,6 @@ CARD_DEFS = [
     {"entity_id": "morpho-apyusd-usdc", "metric_name": "capped_collateralization_ratio_deviation_pct", "label": "Capped Ratio 脱锚幅度"},
     {"entity_id": "yt-apxusd", "metric_name": "implied_apy", "label": "YT-apxUSD 隐含 APY"},
     {"entity_id": "yt-apyusd", "metric_name": "implied_apy", "label": "YT-apyUSD 隐含 APY"},
-    {"entity_id": "morpho-apyusd-apxusd", "metric_name": "available_to_borrow_usd", "label": "Morpho 可借款额"},
     {"entity_id": "morpho-apyusd-usdc", "metric_name": "available_to_borrow_usd", "label": "apyUSD/USDC 可借款额"},
 ]
 

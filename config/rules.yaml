@@ -54,39 +54,6 @@ rules:
     required_consecutive_hits: 1
     enabled: true
 
-  - rule_id: morpho_available_borrow_floor
-    description: Morpho 可借款额过低
-    entity_id: morpho-apyusd-apxusd
-    metric_name: available_to_borrow_usd
-    comparator: lt
-    threshold: 250000
-    severity: P1
-    cooldown_seconds: 600
-    required_consecutive_hits: 1
-    enabled: true
-
-  - rule_id: morpho_borrow_apy_ceiling
-    description: Morpho 借款利率过高
-    entity_id: morpho-apyusd-apxusd
-    metric_name: borrow_apy
-    comparator: gt
-    threshold: 18
-    severity: P1
-    cooldown_seconds: 600
-    required_consecutive_hits: 1
-    enabled: true
-
-  - rule_id: morpho_utilization_ceiling
-    description: Morpho 利用率过高
-    entity_id: morpho-apyusd-apxusd
-    metric_name: utilization_pct
-    comparator: gt
-    threshold: 90
-    severity: P2
-    cooldown_seconds: 900
-    required_consecutive_hits: 1
-    enabled: true
-
   - rule_id: morpho_apyusd_usdc_available_borrow_floor
     description: Morpho apyUSD/USDC 可借款额过低
     entity_id: morpho-apyusd-usdc
