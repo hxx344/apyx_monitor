@@ -1,21 +1,28 @@
 from __future__ import annotations
 
+import base64
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
 from html import escape
 import re
+import secrets
+import time
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Form, Query
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlmodel import Session, select
 
-from ..config import RuleDefinition, get_asset_catalog, get_rule_catalog
+from ..config import RuleDefinition, Settings, get_asset_catalog, get_rule_catalog, get_settings
 from ..db import get_session
 from ..models import AlertEvent, AlertRuleOverride, MetricSnapshot, utc_now
 
 router = APIRouter(tags=["dashboard"])
 
 BEIJING_TZ = timezone(timedelta(hours=8))
+SESSION_COOKIE_NAME = "apyx_dashboard_session"
 
 CARD_DEFS = [
     {"entity_id": "apxusd", "metric_name": "tvl_usd", "label": "apxUSD TVL"},
@@ -88,6 +95,59 @@ THRESHOLD_RULE_IDS = [
     "curve_apyusd_apxusd_rate_deviation_ceiling",
     "apyx_capped_ratio_deviation_ceiling",
 ]
+
+
+def _sign_session_payload(payload: str, settings: Settings) -> str:
+    return hmac.new(
+        settings.dashboard_session_secret.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _create_session_token(username: str, settings: Settings) -> str:
+    expires_at = int(time.time()) + settings.dashboard_session_ttl_seconds
+    nonce = secrets.token_urlsafe(12)
+    payload = f"{username}|{expires_at}|{nonce}"
+    signature = _sign_session_payload(payload, settings)
+    token = f"{payload}|{signature}".encode("utf-8")
+    return base64.urlsafe_b64encode(token).decode("ascii")
+
+
+def _read_session_username(request: Request, settings: Settings) -> str | None:
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        return None
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+        username, expires_at_raw, nonce, signature = decoded.split("|", 3)
+        payload = f"{username}|{expires_at_raw}|{nonce}"
+        expected_signature = _sign_session_payload(payload, settings)
+        if not hmac.compare_digest(signature, expected_signature):
+            return None
+        if int(expires_at_raw) < int(time.time()):
+            return None
+        if not hmac.compare_digest(username, settings.dashboard_username):
+            return None
+        return username
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _dashboard_next_url(request: Request) -> str:
+    path = request.url.path
+    if request.url.query:
+        path = f"{path}?{request.url.query}"
+    return path
+
+
+def _require_dashboard_auth(request: Request) -> str:
+    settings = get_settings()
+    username = _read_session_username(request, settings)
+    if username is None:
+        next_url = quote(_dashboard_next_url(request), safe="")
+        raise HTTPException(status_code=303, headers={"Location": f"/dashboard/login?next={next_url}"})
+    return username
 
 
 def _format_value(metric_name: str, value: float | None) -> str:
@@ -580,13 +640,96 @@ def _render_morpho_market_table(latest_map: dict[tuple[str, str], MetricSnapshot
     return "".join(rows)
 
 
+def _render_login_page(next_url: str, failed: bool = False) -> str:
+        error = '<div class="error">账号或密码错误</div>' if failed else ""
+        return f"""
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>APYX Monitor 登录</title>
+    <style>
+        :root {{ color-scheme: dark; }}
+        * {{ box-sizing: border-box; }}
+        body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: Inter, "Segoe UI", Arial, sans-serif; background: radial-gradient(circle at top, rgba(96,165,250,0.2), transparent 34%), linear-gradient(180deg, #0b1020 0%, #0f172a 100%); color: #eef2ff; }}
+        .login-card {{ width: min(420px, calc(100vw - 32px)); padding: 28px; border: 1px solid rgba(148,163,184,0.18); border-radius: 22px; background: rgba(17,24,45,0.94); box-shadow: 0 24px 70px rgba(0,0,0,0.34); }}
+        h1 {{ margin: 0 0 8px; font-size: 26px; }}
+        p {{ margin: 0 0 24px; color: #94a3b8; line-height: 1.6; }}
+        label {{ display: flex; flex-direction: column; gap: 8px; color: #cbd5e1; font-size: 13px; margin-bottom: 16px; }}
+        input {{ width: 100%; border: 1px solid rgba(148,163,184,0.22); border-radius: 14px; padding: 12px 14px; background: rgba(15,23,42,0.76); color: #eef2ff; font-size: 15px; outline: none; }}
+        input:focus {{ border-color: rgba(96,165,250,0.7); box-shadow: 0 0 0 3px rgba(96,165,250,0.14); }}
+        button {{ width: 100%; margin-top: 6px; border: 0; border-radius: 14px; padding: 12px 16px; background: linear-gradient(135deg, #2563eb, #14b8a6); color: white; font-size: 15px; font-weight: 700; cursor: pointer; }}
+        .error {{ margin-bottom: 16px; padding: 10px 12px; border-radius: 12px; background: rgba(248,113,113,0.13); border: 1px solid rgba(248,113,113,0.32); color: #fecaca; font-size: 13px; }}
+    </style>
+</head>
+<body>
+    <form class="login-card" method="post" action="/dashboard/login">
+        <h1>APYX Monitor</h1>
+        <p>请输入账号密码访问监控面板。</p>
+        {error}
+        <input type="hidden" name="next_url" value="{escape(next_url)}" />
+        <label>
+            <span>账号</span>
+            <input name="username" autocomplete="username" required autofocus />
+        </label>
+        <label>
+            <span>密码</span>
+            <input name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <button type="submit">登录</button>
+    </form>
+</body>
+</html>
+        """
+
+
+@router.get("/dashboard/login", response_class=HTMLResponse)
+def login_page(next_url: str = Query(default="/dashboard", alias="next"), failed: int = Query(default=0)) -> str:
+        return _render_login_page(next_url, bool(failed))
+
+
+@router.post("/dashboard/login")
+def login(
+        username: str = Form(...),
+        password: str = Form(...),
+        next_url: str = Form(default="/dashboard"),
+):
+        settings = get_settings()
+        valid_username = hmac.compare_digest(username, settings.dashboard_username)
+        valid_password = hmac.compare_digest(password, settings.dashboard_password)
+        if not (valid_username and valid_password):
+            return RedirectResponse(url=f"/dashboard/login?failed=1&next={quote(next_url, safe='')}", status_code=303)
+
+        safe_next_url = next_url if next_url.startswith("/") and not next_url.startswith("//") else "/dashboard"
+        response = RedirectResponse(url=safe_next_url, status_code=303)
+        response.set_cookie(
+                key=SESSION_COOKIE_NAME,
+                value=_create_session_token(username, settings),
+                max_age=settings.dashboard_session_ttl_seconds,
+                httponly=True,
+                samesite="lax",
+                secure=settings.app_env.lower() in {"prod", "production"},
+        )
+        return response
+
+
+@router.post("/dashboard/logout")
+def logout():
+        response = RedirectResponse(url="/dashboard/login", status_code=303)
+        response.delete_cookie(SESSION_COOKIE_NAME)
+        return response
+
+
 @router.post("/dashboard/thresholds")
 def update_threshold(
+    request: Request,
     rule_id: str = Form(...),
     threshold: float = Form(...),
     hours: int = Form(default=24),
     session: Session = Depends(get_session),
 ):
+    _require_dashboard_auth(request)
     rule_map = _effective_rule_map(session)
     if rule_id not in THRESHOLD_RULE_IDS or rule_id not in rule_map:
         return RedirectResponse(url=f"/dashboard?hours={hours}", status_code=303)
@@ -603,10 +746,12 @@ def update_threshold(
 
 @router.get("/dashboard", response_class=HTMLResponse)
 def dashboard(
+    request: Request,
     hours: int = Query(default=24, ge=1, le=24 * 30),
     threshold_updated: int = Query(default=0),
     session: Session = Depends(get_session),
 ) -> str:
+    _require_dashboard_auth(request)
     latest_map = _latest_metric_map(session)
     rule_map = _effective_rule_map(session)
     latest_run = max((row.recorded_at for row in latest_map.values()), default=None)
@@ -723,6 +868,7 @@ def dashboard(
       <form class="actions" method="get" action="/dashboard">
         <select name="hours">{hour_options}</select>
         <button type="submit">刷新</button>
+                <button type="submit" formmethod="post" formaction="/dashboard/logout">退出</button>
         <div class="status">{escape(status_text)}</div>
       </form>
     </div>

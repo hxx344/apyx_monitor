@@ -33,7 +33,7 @@
 ## 快速启动
 
 1. 复制 `.env.example` 为 `.env`
-2. 按需填写飞书与 RPC
+2. 修改看板登录账号密码，并按需填写飞书与 RPC
 3. 安装依赖
 4. 启动服务：
 
@@ -48,6 +48,15 @@ uvicorn apyx_monitor.main:app --reload
 - `GET /api/v1/metrics/trends?entity_id=apxusd&metric_name=tvl_usd&hours=24&bucket_minutes=15`
 - `GET /api/v1/alerts?status=firing`
 - `POST /api/v1/jobs/poll`
+
+### Dashboard 登录
+
+访问 `/dashboard` 会先跳转到登录页。默认账号密码请在 `.env` 中配置：
+
+- `DASHBOARD_USERNAME`：看板账号
+- `DASHBOARD_PASSWORD`：看板密码
+- `DASHBOARD_SESSION_SECRET`：Cookie 会话签名密钥，生产环境请使用足够长的随机字符串
+- `DASHBOARD_SESSION_TTL_SECONDS`：登录有效期，默认 `86400` 秒
 
 ## 目录结构
 
