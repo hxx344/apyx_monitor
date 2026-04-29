@@ -96,8 +96,34 @@ CHAINLINK_FEED_ABI = [
     },
 ]
 
+APYX_RATE_VIEW_ABI = [
+    {
+        "inputs": [],
+        "name": "precision",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "apy",
+        "outputs": [{"internalType": "uint256", "name": "percentYield", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "vault",
+        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+]
+
+APYUSD_GROUP_ID = "apyusd"
 APYUSD_ETHEREUM_ASSET_ID = "apyusd-ethereum"
 MORPHO_APYUSD_USDC_MARKET_ID = "morpho-apyusd-usdc"
+APYX_APYUSD_RATE_VIEW = "0xCABa36EDE2C08e16F3602e8688a8bE94c1B4e484"
 APYX_CAPPED_COLLATERALIZATION_RATIO_FEED = "0x2037a5Eb67aa9B2FBF50042B724D8c4dB80F23b4"
 CURVE_APYUSD_APXUSD_POOL_ID = "curve-apyusd-apxusd"
 
@@ -284,6 +310,36 @@ class OnChainCollector(BaseCollector):
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("onchain feed %s failed: %s", APYX_CAPPED_COLLATERALIZATION_RATIO_FEED, exc)
+
+        try:
+            ethereum_chain = chain_map["ethereum"]
+            web3 = self._get_provider("ethereum", ethereum_chain.resolve_rpc_url())
+            rate_view = web3.eth.contract(
+                address=Web3.to_checksum_address(APYX_APYUSD_RATE_VIEW),
+                abi=APYX_RATE_VIEW_ABI,
+            )
+            precision = rate_view.functions.precision().call()
+            apy_raw = rate_view.functions.apy().call()
+            vault_address = rate_view.functions.vault().call()
+            metrics.append(
+                MetricPoint(
+                    entity_id=APYUSD_GROUP_ID,
+                    entity_type="asset_group",
+                    metric_name="underlying_apy",
+                    value=float(apy_raw / precision * 100),
+                    unit="pct",
+                    source="rpc:ethereum:apyx_rate_view",
+                    recorded_at=recorded_at,
+                    details={
+                        "rate_view_address": APYX_APYUSD_RATE_VIEW,
+                        "vault_address": vault_address,
+                        "raw_value": int(apy_raw),
+                        "precision": int(precision),
+                    },
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("onchain APYX rate view %s failed: %s", APYX_APYUSD_RATE_VIEW, exc)
 
         for pool in self.catalog.curve_pools:
             if not pool.enabled:

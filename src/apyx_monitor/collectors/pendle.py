@@ -9,6 +9,9 @@ from ..config import AssetCatalog, Settings
 from .base import BaseCollector, MetricPoint
 
 
+ONCHAIN_UNDERLYING_APY_ASSET_IDS = {"apyusd"}
+
+
 class PendleCollector(BaseCollector):
     name = "pendle"
     base_url = "https://api-v2.pendle.finance/core/v1"
@@ -76,7 +79,10 @@ class PendleCollector(BaseCollector):
                     )
 
                 underlying_apy = payload.get("underlyingApy")
-                if underlying_apy is not None:
+                if (
+                    underlying_apy is not None
+                    and market.underlying_asset_id not in ONCHAIN_UNDERLYING_APY_ASSET_IDS
+                ):
                     metrics.append(
                         MetricPoint(
                             entity_id=market.underlying_asset_id,

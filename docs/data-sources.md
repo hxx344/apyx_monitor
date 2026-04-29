@@ -57,13 +57,16 @@
 - `apyUSD` 为 ERC-4626 tokenized vault
 - 文档提到 NAV dashboard，但未发现稳定公开 API
 - 官网与应用存在反爬，MVP 不将 HTML 抓取作为主源
+- `ApyUSDRateView`: `0xCABa36EDE2C08e16F3602e8688a8bE94c1B4e484`
+- `apyUSD underlying APY`: 链上读取 `ApyUSDRateView.apy()`
 
 ## MVP 数据口径
 - `apxUSD TVL`: 多链 `totalSupply * 1 USD`
 - `apyUSD TVL`: 多链 `totalAssets * 1 USD`
 - `apyUSD NAV`: `totalAssets / totalSupply`
 - `yt-* price`: Pendle `yt.price.usd`
-- `underlying APY`: Pendle `underlyingApy`
+- `apxUSD underlying APY`: Pendle `underlyingApy`
+- `apyUSD underlying APY`: 链上 `ApyUSDRateView.apy()`
 - `Curve exchange_rate`: Curve pool `get_dy(apyUSD -> apxUSD, 1e18)`
 - `Morpho available_to_borrow_usd`: `state.liquidityAssetsUsd`
 - `Morpho borrow_apy`: `state.borrowApy`

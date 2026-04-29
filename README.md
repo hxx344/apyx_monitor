@@ -67,7 +67,7 @@ uvicorn apyx_monitor.main:app --reload
 
 ## 说明
 
-- `apxUSD` / `apyUSD` 的 APY 在官方站点存在反爬，MVP 默认优先用 Pendle 市场中的 `underlyingApy` 作为可程序化替代来源。
+- `apyUSD` 的底层 APY 读取官方链上 `ApyUSDRateView.apy()`；`apxUSD` 暂继续使用 Pendle 市场中的 `underlyingApy`。
 - `apyUSD` 作为 ERC-4626 vault，TVL 采用 `totalAssets` 近似，NAV 采用 `totalAssets / totalSupply`。
 - 默认规则仅为示例值，正式环境需按业务重新标定。
 - 已新增简单看板，可查看 TVL、底层 APY、YT 隐含 APY、Curve 汇率和 Morpho 指标历史趋势。
