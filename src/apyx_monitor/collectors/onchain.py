@@ -126,6 +126,7 @@ MORPHO_APYUSD_USDC_MARKET_ID = "morpho-apyusd-usdc"
 APYX_APYUSD_RATE_VIEW = "0xCABa36EDE2C08e16F3602e8688a8bE94c1B4e484"
 APYX_CAPPED_COLLATERALIZATION_RATIO_FEED = "0x2037a5Eb67aa9B2FBF50042B724D8c4dB80F23b4"
 CURVE_APYUSD_APXUSD_POOL_ID = "curve-apyusd-apxusd"
+COMPOUNDING_PERIODS_PER_YEAR = 12
 
 
 logger = logging.getLogger(__name__)
@@ -321,22 +322,46 @@ class OnChainCollector(BaseCollector):
             precision = rate_view.functions.precision().call()
             apy_raw = rate_view.functions.apy().call()
             vault_address = rate_view.functions.vault().call()
-            metrics.append(
-                MetricPoint(
-                    entity_id=APYUSD_GROUP_ID,
-                    entity_type="asset_group",
-                    metric_name="underlying_apy",
-                    value=float(apy_raw / precision * 100),
-                    unit="pct",
-                    source="rpc:ethereum:apyx_rate_view",
-                    recorded_at=recorded_at,
-                    details={
-                        "rate_view_address": APYX_APYUSD_RATE_VIEW,
-                        "vault_address": vault_address,
-                        "raw_value": int(apy_raw),
-                        "precision": int(precision),
-                    },
-                )
+            apr_rate = apy_raw / precision
+            apr_pct = float(apr_rate * 100)
+            apy_pct = (
+                float((1 + apr_rate / COMPOUNDING_PERIODS_PER_YEAR) ** COMPOUNDING_PERIODS_PER_YEAR - 1)
+                * 100
+            )
+            base_details = {
+                "rate_view_address": APYX_APYUSD_RATE_VIEW,
+                "vault_address": vault_address,
+                "raw_value": int(apy_raw),
+                "precision": int(precision),
+            }
+            metrics.extend(
+                [
+                    MetricPoint(
+                        entity_id=APYUSD_GROUP_ID,
+                        entity_type="asset_group",
+                        metric_name="underlying_apr",
+                        value=apr_pct,
+                        unit="pct",
+                        source="rpc:ethereum:apyx_rate_view",
+                        recorded_at=recorded_at,
+                        details=base_details,
+                    ),
+                    MetricPoint(
+                        entity_id=APYUSD_GROUP_ID,
+                        entity_type="asset_group",
+                        metric_name="underlying_apy",
+                        value=apy_pct,
+                        unit="pct",
+                        source="derived:monthly_compounding:apyx_rate_view",
+                        recorded_at=recorded_at,
+                        details={
+                            **base_details,
+                            "apr_pct": apr_pct,
+                            "compounding_periods_per_year": COMPOUNDING_PERIODS_PER_YEAR,
+                            "formula": "(1 + apr / periods) ** periods - 1",
+                        },
+                    ),
+                ]
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("onchain APYX rate view %s failed: %s", APYX_APYUSD_RATE_VIEW, exc)

@@ -27,7 +27,13 @@ SESSION_COOKIE_NAME = "apyx_dashboard_session"
 CARD_DEFS = [
     {"entity_id": "apxusd", "metric_name": "tvl_usd", "label": "apxUSD TVL"},
     {"entity_id": "apyusd", "metric_name": "tvl_usd", "label": "apyUSD TVL"},
-    {"entity_id": "apyusd", "metric_name": "underlying_apy", "label": "apyUSD 底层 APY"},
+    {
+        "entity_id": "apyusd",
+        "metric_name": "underlying_apy",
+        "secondary_metric_name": "underlying_apr",
+        "label": "apyUSD 底层 APR / APY",
+        "display": "apr_apy_pair",
+    },
     {"entity_id": "apyusd-ethereum", "metric_name": "convert_to_assets", "label": "apyUSD convertToAssets()"},
     {"entity_id": "curve-apyusd-apxusd", "metric_name": "exchange_rate", "label": "Curve 1 apyUSD → apxUSD"},
     {"entity_id": "curve-apyusd-apxusd", "metric_name": "curve_rate_vs_nav_deviation_pct", "label": "Curve 偏离净值"},
@@ -161,9 +167,15 @@ def _format_value(metric_name: str, value: float | None) -> str:
         return f"{value:.4f}x"
     if metric_name.endswith("_usd") or metric_name == "price_usd":
         return f"${value:,.0f}" if abs(value) >= 100 else f"${value:,.4f}"
-    if metric_name.endswith("_apy") or metric_name.endswith("_pct"):
+    if metric_name.endswith("_apy") or metric_name.endswith("_apr") or metric_name.endswith("_pct"):
         return f"{value:.2f}%"
     return f"{value:,.4f}"
+
+
+def _monthly_compounded_pct(apr_pct: float) -> float:
+    periods = 12
+    apr = apr_pct / 100
+    return ((1 + apr / periods) ** periods - 1) * 100
 
 
 def _latest_metric_map(session: Session) -> dict[tuple[str, str], MetricSnapshot]:
@@ -358,6 +370,10 @@ def _build_chart_table(series_list: list[dict], limit: int = 12) -> str:
 def _render_cards(latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
     cards = []
     for item in CARD_DEFS:
+        if item.get("display") == "apr_apy_pair":
+            cards.append(_render_apr_apy_card(item, latest_map))
+            continue
+
         metric = latest_map.get((item["entity_id"], item["metric_name"]))
         value = _format_value(item["metric_name"], metric.value if metric else None)
         recorded_at = f"{_format_dt(metric.recorded_at)} 北京时间" if metric else "-"
@@ -371,6 +387,44 @@ def _render_cards(latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
             '''
         )
     return "".join(cards)
+
+
+def _render_apr_apy_card(item: dict, latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
+    entity_id = item["entity_id"]
+    apy_metric = latest_map.get((entity_id, item["metric_name"]))
+    apr_metric = latest_map.get((entity_id, item["secondary_metric_name"]))
+
+    apr_value = apr_metric.value if apr_metric else None
+    apy_value = apy_metric.value if apy_metric else None
+
+    if apr_value is None and apy_metric and apy_metric.source == "rpc:ethereum:apyx_rate_view":
+        apr_value = apy_metric.value
+    if apy_value is None and apr_value is not None:
+        apy_value = _monthly_compounded_pct(apr_value)
+    elif apy_metric and apy_metric.source == "rpc:ethereum:apyx_rate_view":
+        apy_value = _monthly_compounded_pct(apy_metric.value)
+
+    metric_times = [metric.recorded_at for metric in (apr_metric, apy_metric) if metric]
+    recorded_at = f"{_format_dt(max(metric_times))} 北京时间" if metric_times else "-"
+    apr_text = _format_value("underlying_apr", apr_value)
+    apy_text = _format_value("underlying_apy", apy_value)
+
+    return f'''
+            <div class="card yield-card">
+              <div class="label">{escape(item["label"])}</div>
+              <div class="yield-pair">
+                <div class="yield-stat">
+                  <span>APR</span>
+                  <strong>{escape(apr_text)}</strong>
+                </div>
+                <div class="yield-stat">
+                  <span>APY</span>
+                  <strong>{escape(apy_text)}</strong>
+                </div>
+              </div>
+              <div class="meta">更新时间：{escape(recorded_at)}</div>
+            </div>
+            '''
 
 
 def _render_threshold_controls(
@@ -793,6 +847,10 @@ def dashboard(
     .card .label {{ color: var(--muted); font-size: 13px; margin-bottom: 8px; }}
     .card .value {{ font-size: 28px; font-weight: 700; margin-bottom: 4px; }}
     .card .meta {{ color: var(--muted); font-size: 12px; }}
+    .yield-pair {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 8px 0; }}
+    .yield-stat {{ min-width: 0; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(148,163,184,0.12); background: rgba(15,23,42,0.48); }}
+    .yield-stat span {{ display: block; color: var(--muted); font-size: 11px; margin-bottom: 5px; }}
+    .yield-stat strong {{ display: block; font-size: 22px; line-height: 1.1; white-space: nowrap; }}
     .grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }}
     .threshold-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }}
     .threshold-card {{ display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 16px; border: 1px solid rgba(148,163,184,0.16); background: rgba(15,23,42,0.45); }}
