@@ -22,6 +22,7 @@ class Settings(BaseSettings):
         alias="DATABASE_URL",
     )
     collection_interval_seconds: int = Field(default=60, alias="COLLECTION_INTERVAL_SECONDS")
+    nav_curve_interval_seconds: int = Field(default=20, alias="NAV_CURVE_INTERVAL_SECONDS")
     http_timeout_seconds: int = Field(default=15, alias="HTTP_TIMEOUT_SECONDS")
     dashboard_username: str = Field(default="admin", alias="DASHBOARD_USERNAME")
     dashboard_password: str = Field(default="admin", alias="DASHBOARD_PASSWORD")

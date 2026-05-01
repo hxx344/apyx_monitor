@@ -12,4 +12,9 @@ async def healthz(request: Request) -> dict:
         "status": service.last_run_status,
         "last_run_at": service.last_run_at.isoformat() if service.last_run_at else None,
         "collector_errors": service.last_errors,
+        "nav_curve_status": service.last_nav_curve_status,
+        "nav_curve_last_run_at": (
+            service.last_nav_curve_run_at.isoformat() if service.last_nav_curve_run_at else None
+        ),
+        "nav_curve_errors": service.last_nav_curve_errors,
     }

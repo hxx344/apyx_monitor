@@ -13,7 +13,7 @@ from ..config import get_asset_catalog, get_rule_catalog, get_settings
 from ..db import engine
 from ..models import MetricSnapshot
 from .alerting import FeishuNotifier
-from .rule_engine import RuleEngine
+from .rule_engine import NotificationMessage, RuleEngine, RuleEvaluationResult
 
 
 logger = logging.getLogger(__name__)
@@ -24,8 +24,9 @@ class MonitoringService:
         self.settings = get_settings()
         self.asset_catalog = get_asset_catalog()
         self.rule_catalog = get_rule_catalog()
+        self.onchain_collector = OnChainCollector(self.settings, self.asset_catalog)
         self.collectors = [
-            OnChainCollector(self.settings, self.asset_catalog),
+            self.onchain_collector,
             PendleCollector(self.settings, self.asset_catalog),
             MorphoCollector(self.settings, self.asset_catalog),
         ]
@@ -34,6 +35,9 @@ class MonitoringService:
         self.last_run_at: datetime | None = None
         self.last_run_status: str = "never"
         self.last_errors: dict[str, str] = {}
+        self.last_nav_curve_run_at: datetime | None = None
+        self.last_nav_curve_status: str = "never"
+        self.last_nav_curve_errors: dict[str, str] = {}
 
     async def poll_once(self) -> dict[str, object]:
         if self._lock.locked():
@@ -50,30 +54,8 @@ class MonitoringService:
                     logger.exception("collector %s failed", collector.name)
                     self.last_errors[collector.name] = str(exc)
 
-            with Session(engine) as session:
-                for point in all_points:
-                    session.add(
-                        MetricSnapshot(
-                            entity_id=point.entity_id,
-                            entity_type=point.entity_type,
-                            metric_name=point.metric_name,
-                            value=point.value,
-                            unit=point.unit,
-                            source=point.source,
-                            recorded_at=point.recorded_at,
-                            details_json=json.dumps(point.details, ensure_ascii=False),
-                        )
-                    )
-                latest_metrics = self._latest_metric_map(all_points)
-                evaluation = self.rule_engine.evaluate(session, latest_metrics)
-                session.commit()
-
-            for notification in evaluation.notifications:
-                try:
-                    await self.rule_engine.notifier.notify(notification.title, notification.body)
-                except Exception as exc:  # noqa: BLE001
-                    logger.exception("alert notification failed")
-                    self.last_errors[f"notification:{notification.title}"] = str(exc)
+            evaluation = self._persist_and_evaluate(all_points)
+            await self._send_notifications(evaluation.notifications, self.last_errors)
 
             self.last_run_at = datetime.now(timezone.utc)
             self.last_run_status = "partial_failure" if self.last_errors else "ok"
@@ -84,6 +66,67 @@ class MonitoringService:
                 "errors": self.last_errors,
                 "last_run_at": self.last_run_at.isoformat(),
             }
+
+    async def poll_nav_curve_once(self) -> dict[str, object]:
+        if self._lock.locked():
+            return {"status": "skipped", "reason": "poll already in progress"}
+
+        async with self._lock:
+            self.last_nav_curve_errors = {}
+            all_points: list[MetricPoint] = []
+            try:
+                all_points = await self.onchain_collector.collect_nav_curve()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("nav/curve collector failed")
+                self.last_nav_curve_errors["nav_curve"] = str(exc)
+
+            evaluation = self._persist_and_evaluate(all_points)
+            await self._send_notifications(evaluation.notifications, self.last_nav_curve_errors)
+
+            self.last_nav_curve_run_at = datetime.now(timezone.utc)
+            self.last_nav_curve_status = "partial_failure" if self.last_nav_curve_errors else "ok"
+            return {
+                "status": self.last_nav_curve_status,
+                "collected_metrics": len(all_points),
+                "alerts_touched": len(evaluation.events),
+                "errors": self.last_nav_curve_errors,
+                "last_run_at": self.last_nav_curve_run_at.isoformat(),
+            }
+
+    def _persist_and_evaluate(self, all_points: list[MetricPoint]) -> RuleEvaluationResult:
+        if not all_points:
+            return RuleEvaluationResult(events=[], notifications=[])
+
+        with Session(engine) as session:
+            for point in all_points:
+                session.add(
+                    MetricSnapshot(
+                        entity_id=point.entity_id,
+                        entity_type=point.entity_type,
+                        metric_name=point.metric_name,
+                        value=point.value,
+                        unit=point.unit,
+                        source=point.source,
+                        recorded_at=point.recorded_at,
+                        details_json=json.dumps(point.details, ensure_ascii=False),
+                    )
+                )
+            latest_metrics = self._latest_metric_map(all_points)
+            evaluation = self.rule_engine.evaluate(session, latest_metrics)
+            session.commit()
+        return evaluation
+
+    async def _send_notifications(
+        self,
+        notifications: list[NotificationMessage],
+        errors: dict[str, str],
+    ) -> None:
+        for notification in notifications:
+            try:
+                await self.rule_engine.notifier.notify(notification.title, notification.body)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("alert notification failed")
+                errors[f"notification:{notification.title}"] = str(exc)
 
     @staticmethod
     def _latest_metric_map(points: list[MetricPoint]) -> dict[tuple[str, str], dict]:

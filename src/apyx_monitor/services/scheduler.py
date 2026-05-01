@@ -17,4 +17,12 @@ def build_scheduler(service: MonitoringService) -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        service.poll_nav_curve_once,
+        "interval",
+        seconds=settings.nav_curve_interval_seconds,
+        id="apyx-monitor-nav-curve-poll",
+        max_instances=1,
+        coalesce=True,
+    )
     return scheduler

@@ -58,6 +58,63 @@ uvicorn apyx_monitor.main:app --reload
 - `DASHBOARD_SESSION_SECRET`：Cookie 会话签名密钥，生产环境请使用足够长的随机字符串
 - `DASHBOARD_SESSION_TTL_SECONDS`：登录有效期，默认 `86400` 秒
 
+## 执行指南
+
+### 本地开发
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+uvicorn apyx_monitor.main:app --reload
+```
+
+如果没有执行 `pip install -e .`，需要先把 `src` 加入 Python 搜索路径：
+
+```bash
+PYTHONPATH=src uvicorn apyx_monitor.main:app --reload
+```
+
+### 长期运行
+
+生产或服务器长期运行时，建议使用单 worker：
+
+```bash
+uvicorn apyx_monitor.main:app --host 0.0.0.0 --port 8000 --workers 1
+```
+
+注意事项：
+
+- 不要用多个 worker 跑 SQLite 版本。当前采集调度器在 FastAPI 进程启动时创建，多个 worker 会启动多个定时采集任务，容易同时写入 SQLite。
+- `--reload` 只用于本地开发，长期运行不要开启。
+- 默认 SQLite 数据库在 `data/apyx_monitor.db`。程序会启用 WAL 和 30 秒 busy timeout，以降低看板查询和后台写入之间的锁冲突。
+- 采集间隔由 `COLLECTION_INTERVAL_SECONDS` 控制，默认每 60 秒采集一次。过低的间隔会增加 RPC/API 压力和数据库写入压力。
+- NAV/Curve 快速扫描由 `NAV_CURVE_INTERVAL_SECONDS` 控制，默认每 20 秒采集一次 `apyUSD convertToAssets()`、Curve `get_dy()` 和偏离净值指标，不会额外请求 Pendle/Morpho。
+- 每次发版后需要重启服务，让数据库 PRAGMA、索引和新代码生效。
+
+### 启动后检查
+
+```bash
+curl http://127.0.0.1:8000/healthz
+curl http://127.0.0.1:8000/api/v1/metrics/latest
+```
+
+也可以手动触发一次采集：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/jobs/poll
+```
+
+### 数据增长与清理
+
+`MetricSnapshot` 会持续保存历史指标，目前没有自动删除策略。长期运行建议定期控制历史数据量，例如只保留最近 30 天或 90 天的分钟级数据；否则 SQLite 文件会持续增长，看板 30 天趋势查询也会越来越慢。
+
+手工清理前请先备份数据库，并尽量在服务停止或低访问时执行：
+
+```bash
+sqlite3 data/apyx_monitor.db "DELETE FROM metricsnapshot WHERE recorded_at < datetime('now', '-90 days'); VACUUM;"
+```
+
 ## 目录结构
 
 - `config/assets.yaml`：资产、合约、Pendle、Morpho 配置

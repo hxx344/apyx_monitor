@@ -518,6 +518,147 @@ class OnChainCollector(BaseCollector):
 
         return metrics
 
+    async def collect_nav_curve(self) -> list[MetricPoint]:
+        metrics: list[MetricPoint] = []
+        recorded_at = datetime.now(timezone.utc)
+        chain_map = self.catalog.chain_map()
+        asset_map = {asset.asset_id: asset for asset in self.catalog.assets}
+        apyusd_convert_to_assets: float | None = None
+        curve_exchange_rate: float | None = None
+
+        asset = asset_map.get(APYUSD_ETHEREUM_ASSET_ID)
+        if asset is not None and asset.enabled:
+            try:
+                chain = chain_map[asset.chain]
+                web3 = self._get_provider(asset.chain, chain.resolve_rpc_url())
+                contract = web3.eth.contract(
+                    address=Web3.to_checksum_address(asset.contract_address),
+                    abi=ERC4626_ABI,
+                )
+                convert_to_assets = (
+                    contract.functions.convertToAssets(10 ** asset.decimals).call()
+                    / 10 ** asset.decimals
+                )
+                apyusd_convert_to_assets = float(convert_to_assets)
+                metrics.append(
+                    MetricPoint(
+                        entity_id=asset.asset_id,
+                        entity_type="asset",
+                        metric_name="convert_to_assets",
+                        value=float(convert_to_assets),
+                        unit="assets_per_share",
+                        source=f"rpc:{asset.chain}:nav_curve_fast",
+                        recorded_at=recorded_at,
+                        details={
+                            "group_id": asset.group_id,
+                            "address": asset.contract_address,
+                            "sample_shares": 10 ** asset.decimals,
+                            "fast_scan": True,
+                        },
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("nav/curve asset %s failed: %s", APYUSD_ETHEREUM_ASSET_ID, exc)
+
+        for pool in self.catalog.curve_pools:
+            if not pool.enabled:
+                continue
+            token_in = asset_map.get(pool.token_in_asset_id)
+            token_out = asset_map.get(pool.token_out_asset_id)
+            if token_in is None or token_out is None:
+                logger.warning(
+                    "nav/curve pool %s skipped: missing asset config %s -> %s",
+                    pool.pool_id,
+                    pool.token_in_asset_id,
+                    pool.token_out_asset_id,
+                )
+                continue
+            try:
+                chain = chain_map[pool.chain]
+                web3 = self._get_provider(pool.chain, chain.resolve_rpc_url())
+                contract = web3.eth.contract(
+                    address=Web3.to_checksum_address(pool.contract_address),
+                    abi=CURVE_POOL_ABI,
+                )
+                coin_addresses: list[str] = []
+                for index in range(8):
+                    try:
+                        coin_addresses.append(
+                            Web3.to_checksum_address(contract.functions.coins(index).call())
+                        )
+                    except Exception:  # noqa: BLE001
+                        break
+                token_in_address = Web3.to_checksum_address(token_in.contract_address)
+                token_out_address = Web3.to_checksum_address(token_out.contract_address)
+                missing_token = (
+                    token_in_address not in coin_addresses
+                    or token_out_address not in coin_addresses
+                )
+                if missing_token:
+                    logger.warning(
+                        "nav/curve pool %s skipped: token addresses not found in pool coins",
+                        pool.pool_id,
+                    )
+                    continue
+                token_in_index = coin_addresses.index(token_in_address)
+                token_out_index = coin_addresses.index(token_out_address)
+                amount_out_raw = contract.functions.get_dy(
+                    token_in_index,
+                    token_out_index,
+                    10 ** token_in.decimals,
+                ).call()
+                exchange_rate = amount_out_raw / 10 ** token_out.decimals
+                if pool.pool_id == CURVE_APYUSD_APXUSD_POOL_ID:
+                    curve_exchange_rate = float(exchange_rate)
+                metrics.append(
+                    MetricPoint(
+                        entity_id=pool.pool_id,
+                        entity_type="pool",
+                        metric_name="exchange_rate",
+                        value=float(exchange_rate),
+                        unit="token_out_per_token_in",
+                        source=f"rpc:{pool.chain}:nav_curve_fast",
+                        recorded_at=recorded_at,
+                        details={
+                            "pool_address": pool.contract_address,
+                            "label": pool.label,
+                            "token_in_asset_id": token_in.asset_id,
+                            "token_out_asset_id": token_out.asset_id,
+                            "token_in_symbol": token_in.symbol,
+                            "token_out_symbol": token_out.symbol,
+                            "token_in_index": token_in_index,
+                            "token_out_index": token_out_index,
+                            "sample_amount": 1.0,
+                            "fast_scan": True,
+                        },
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("nav/curve pool %s failed: %s", pool.pool_id, exc)
+
+        if apyusd_convert_to_assets and curve_exchange_rate is not None:
+            deviation_pct = abs(curve_exchange_rate / apyusd_convert_to_assets - 1) * 100
+            metrics.append(
+                MetricPoint(
+                    entity_id=CURVE_APYUSD_APXUSD_POOL_ID,
+                    entity_type="pool",
+                    metric_name="curve_rate_vs_nav_deviation_pct",
+                    value=float(deviation_pct),
+                    unit="pct",
+                    source="derived:onchain:nav_curve_fast",
+                    recorded_at=recorded_at,
+                    details={
+                        "exchange_rate": curve_exchange_rate,
+                        "convert_to_assets": apyusd_convert_to_assets,
+                        "baseline_metric": "convert_to_assets",
+                        "formula": "abs(exchange_rate / convert_to_assets - 1) * 100",
+                        "fast_scan": True,
+                    },
+                )
+            )
+
+        return metrics
+
     def _get_provider(self, chain_name: str, rpc_url: str) -> Web3:
         if chain_name not in self._providers:
             self._providers[chain_name] = Web3(Web3.HTTPProvider(rpc_url))
