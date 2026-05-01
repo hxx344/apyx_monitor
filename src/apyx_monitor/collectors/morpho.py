@@ -9,9 +9,9 @@ from .base import BaseCollector, MetricPoint
 
 
 MORPHO_MARKET_QUERY = """
-query MarketState($uniqueKey: String!, $chainId: Int!) {
-  marketByUniqueKey(uniqueKey: $uniqueKey, chainId: $chainId) {
-    uniqueKey
+query MarketState($marketId: String!, $chainId: Int!) {
+  marketById(marketId: $marketId, chainId: $chainId) {
+    marketId
     loanAsset {
       address
       symbol
@@ -63,18 +63,25 @@ class MorphoCollector(BaseCollector):
                     self.graphql_url,
                     json={
                         "query": MORPHO_MARKET_QUERY,
-                        "variables": {"uniqueKey": market.unique_key, "chainId": market.chain_id},
+                        "variables": {
+                            "marketId": market.morpho_market_id,
+                            "chainId": market.chain_id,
+                        },
                     },
                 )
                 response.raise_for_status()
                 payload = response.json()
                 if payload.get("errors"):
                     raise RuntimeError(f"Morpho query failed: {payload['errors']}")
-                market_data = payload["data"]["marketByUniqueKey"]
+                market_data = payload["data"]["marketById"]
                 state = market_data["state"]
                 loan_decimals = int(market_data["loanAsset"]["decimals"])
                 liquidity_assets = float(state["liquidityAssets"]) / 10 ** loan_decimals
                 recorded_at = datetime.now(timezone.utc)
+                details = {
+                    "label": market.label,
+                    "morpho_market_id": market.morpho_market_id,
+                }
 
                 metrics.extend(
                     [
@@ -86,7 +93,7 @@ class MorphoCollector(BaseCollector):
                             unit="assets",
                             source="morpho_api",
                             recorded_at=recorded_at,
-                            details={"label": market.label, "unique_key": market.unique_key},
+                            details=details,
                         ),
                         MetricPoint(
                             entity_id=market.market_id,
@@ -96,7 +103,7 @@ class MorphoCollector(BaseCollector):
                             unit="usd",
                             source="morpho_api",
                             recorded_at=recorded_at,
-                            details={"label": market.label, "unique_key": market.unique_key},
+                            details=details,
                         ),
                         MetricPoint(
                             entity_id=market.market_id,
@@ -106,7 +113,7 @@ class MorphoCollector(BaseCollector):
                             unit="pct",
                             source="morpho_api",
                             recorded_at=recorded_at,
-                            details={"label": market.label, "unique_key": market.unique_key},
+                            details=details,
                         ),
                         MetricPoint(
                             entity_id=market.market_id,
@@ -116,7 +123,7 @@ class MorphoCollector(BaseCollector):
                             unit="pct",
                             source="morpho_api",
                             recorded_at=recorded_at,
-                            details={"label": market.label, "unique_key": market.unique_key},
+                            details=details,
                         ),
                         MetricPoint(
                             entity_id=market.market_id,
@@ -126,7 +133,7 @@ class MorphoCollector(BaseCollector):
                             unit="usd",
                             source="morpho_api",
                             recorded_at=recorded_at,
-                            details={"label": market.label, "unique_key": market.unique_key},
+                            details=details,
                         ),
                         MetricPoint(
                             entity_id=market.market_id,
@@ -136,7 +143,7 @@ class MorphoCollector(BaseCollector):
                             unit="usd",
                             source="morpho_api",
                             recorded_at=recorded_at,
-                            details={"label": market.label, "unique_key": market.unique_key},
+                            details=details,
                         ),
                         MetricPoint(
                             entity_id=market.market_id,
@@ -146,7 +153,7 @@ class MorphoCollector(BaseCollector):
                             unit="pct",
                             source="morpho_api",
                             recorded_at=recorded_at,
-                            details={"label": market.label, "unique_key": market.unique_key},
+                            details=details,
                         ),
                     ]
                 )

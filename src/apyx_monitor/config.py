@@ -75,7 +75,7 @@ class PendleMarketDefinition(BaseModel):
 class MorphoMarketDefinition(BaseModel):
     market_id: str
     label: str
-    unique_key: str
+    morpho_market_id: str
     chain_id: int
     enabled: bool = True
 
