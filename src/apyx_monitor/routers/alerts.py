@@ -20,11 +20,9 @@ def list_alerts(
     statement = select(AlertEvent)
     if status:
         statement = statement.where(AlertEvent.status == status)
-    rows = sorted(
-        session.exec(statement).all(),
-        key=lambda row: row.last_triggered_at,
-        reverse=True,
-    )[:limit]
+    rows = session.exec(
+        statement.order_by(AlertEvent.last_triggered_at.desc(), AlertEvent.id.desc()).limit(limit)
+    ).all()
     return [
         {
             "id": row.id,

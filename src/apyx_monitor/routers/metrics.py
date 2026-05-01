@@ -5,6 +5,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from ..db import get_session
@@ -26,6 +27,38 @@ def _serialize_metric(row: MetricSnapshot) -> dict:
     }
 
 
+def _latest_metric_rows(
+    session: Session,
+    entity_id: str | None = None,
+    metric_name: str | None = None,
+    limit: int | None = None,
+) -> list[MetricSnapshot]:
+    ranked_statement = select(
+        MetricSnapshot.id.label("id"),
+        func.row_number()
+        .over(
+            partition_by=(MetricSnapshot.entity_id, MetricSnapshot.metric_name),
+            order_by=(MetricSnapshot.recorded_at.desc(), MetricSnapshot.id.desc()),
+        )
+        .label("rn"),
+    )
+    if entity_id:
+        ranked_statement = ranked_statement.where(MetricSnapshot.entity_id == entity_id)
+    if metric_name:
+        ranked_statement = ranked_statement.where(MetricSnapshot.metric_name == metric_name)
+
+    ranked = ranked_statement.subquery()
+    statement = (
+        select(MetricSnapshot)
+        .join(ranked, MetricSnapshot.id == ranked.c.id)
+        .where(ranked.c.rn == 1)
+        .order_by(MetricSnapshot.recorded_at.desc(), MetricSnapshot.id.desc())
+    )
+    if limit is not None:
+        statement = statement.limit(limit)
+    return list(session.exec(statement).all())
+
+
 @router.get("/latest")
 def latest_metrics(
     entity_id: str | None = Query(default=None),
@@ -33,22 +66,8 @@ def latest_metrics(
     limit: int = Query(default=200, le=1000),
     session: Session = Depends(get_session),
 ) -> list[dict]:
-    statement = select(MetricSnapshot)
-    if entity_id:
-        statement = statement.where(MetricSnapshot.entity_id == entity_id)
-    if metric_name:
-        statement = statement.where(MetricSnapshot.metric_name == metric_name)
-    rows = sorted(session.exec(statement).all(), key=lambda row: row.recorded_at, reverse=True)
-
-    latest: dict[tuple[str, str], MetricSnapshot] = {}
-    for row in rows:
-        key = (row.entity_id, row.metric_name)
-        if key not in latest:
-            latest[key] = row
-        if len(latest) >= limit:
-            break
-
-    return [_serialize_metric(row) for row in latest.values()]
+    rows = _latest_metric_rows(session, entity_id=entity_id, metric_name=metric_name, limit=limit)
+    return [_serialize_metric(row) for row in rows]
 
 
 @router.get("/history")
@@ -61,9 +80,10 @@ def metric_history(
     statement = (
         select(MetricSnapshot)
         .where(MetricSnapshot.entity_id == entity_id, MetricSnapshot.metric_name == metric_name)
+        .order_by(MetricSnapshot.recorded_at.desc(), MetricSnapshot.id.desc())
         .limit(limit)
     )
-    rows = sorted(session.exec(statement).all(), key=lambda row: row.recorded_at, reverse=True)[:limit]
+    rows = session.exec(statement).all()
     return [_serialize_metric(row) for row in rows]
 
 
@@ -80,8 +100,8 @@ def metric_trends(
         MetricSnapshot.entity_id == entity_id,
         MetricSnapshot.metric_name == metric_name,
         MetricSnapshot.recorded_at >= since_at,
-    )
-    rows = sorted(session.exec(statement).all(), key=lambda row: row.recorded_at)
+    ).order_by(MetricSnapshot.recorded_at.asc(), MetricSnapshot.id.asc())
+    rows = session.exec(statement).all()
     if not rows:
         return {
             "entity_id": entity_id,
@@ -130,15 +150,8 @@ def metric_trends(
 
 @router.get("/catalog")
 def metrics_catalog(session: Session = Depends(get_session)) -> dict:
-    rows = session.exec(select(MetricSnapshot)).all()
-    latest: dict[tuple[str, str], MetricSnapshot] = {}
-    for row in sorted(rows, key=lambda item: item.recorded_at, reverse=True):
-        key = (row.entity_id, row.metric_name)
-        if key not in latest:
-            latest[key] = row
-
     catalog: dict[str, dict] = {}
-    for row in latest.values():
+    for row in _latest_metric_rows(session):
         entity = catalog.setdefault(
             row.entity_id,
             {

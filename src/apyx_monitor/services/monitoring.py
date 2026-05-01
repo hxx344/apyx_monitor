@@ -65,15 +65,22 @@ class MonitoringService:
                         )
                     )
                 latest_metrics = self._latest_metric_map(all_points)
-                alerts = await self.rule_engine.evaluate(session, latest_metrics)
+                evaluation = self.rule_engine.evaluate(session, latest_metrics)
                 session.commit()
+
+            for notification in evaluation.notifications:
+                try:
+                    await self.rule_engine.notifier.notify(notification.title, notification.body)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("alert notification failed")
+                    self.last_errors[f"notification:{notification.title}"] = str(exc)
 
             self.last_run_at = datetime.now(timezone.utc)
             self.last_run_status = "partial_failure" if self.last_errors else "ok"
             return {
                 "status": self.last_run_status,
                 "collected_metrics": len(all_points),
-                "alerts_touched": len(alerts),
+                "alerts_touched": len(evaluation.events),
                 "errors": self.last_errors,
                 "last_run_at": self.last_run_at.isoformat(),
             }

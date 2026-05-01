@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
@@ -19,14 +20,31 @@ COMPARATORS: dict[str, Callable[[float, float], bool]] = {
 }
 
 
+@dataclass(frozen=True)
+class NotificationMessage:
+    title: str
+    body: str
+
+
+@dataclass(frozen=True)
+class RuleEvaluationResult:
+    events: list[AlertEvent]
+    notifications: list[NotificationMessage]
+
+
 class RuleEngine:
     def __init__(self, catalog: RuleCatalog, notifier: FeishuNotifier) -> None:
         self.catalog = catalog
         self.notifier = notifier
         self._hit_counters: dict[str, int] = {}
 
-    async def evaluate(self, session: Session, latest_metrics: dict[tuple[str, str], dict]) -> list[AlertEvent]:
+    def evaluate(
+        self,
+        session: Session,
+        latest_metrics: dict[tuple[str, str], dict],
+    ) -> RuleEvaluationResult:
         events: list[AlertEvent] = []
+        notifications: list[NotificationMessage] = []
         now = datetime.now(timezone.utc)
         rules = self._effective_rules(session)
 
@@ -50,16 +68,24 @@ class RuleEngine:
                 self._hit_counters[fingerprint] = self._hit_counters.get(fingerprint, 0) + 1
                 if self._hit_counters[fingerprint] < rule.required_consecutive_hits:
                     continue
-                event = await self._fire_alert(session, rule, metric, active_alert, fingerprint, now)
+                event = self._fire_alert(
+                    session,
+                    rule,
+                    metric,
+                    active_alert,
+                    fingerprint,
+                    now,
+                    notifications,
+                )
                 if event is not None:
                     events.append(event)
             else:
                 self._hit_counters[fingerprint] = 0
                 if active_alert is not None:
-                    resolved = await self._resolve_alert(session, rule, active_alert, metric, now)
+                    resolved = self._resolve_alert(rule, active_alert, metric, now, notifications)
                     events.append(resolved)
 
-        return events
+        return RuleEvaluationResult(events=events, notifications=notifications)
 
     def _effective_rules(self, session: Session) -> list[RuleDefinition]:
         overrides = {
@@ -73,7 +99,7 @@ class RuleEngine:
             for rule in self.catalog.rules
         ]
 
-    async def _fire_alert(
+    def _fire_alert(
         self,
         session: Session,
         rule: RuleDefinition,
@@ -81,6 +107,7 @@ class RuleEngine:
         active_alert: AlertEvent | None,
         fingerprint: str,
         now: datetime,
+        notifications: list[NotificationMessage],
     ) -> AlertEvent | None:
         summary = self._build_summary(rule, metric["value"], status="firing")
         details_json = json.dumps(metric.get("details", {}), ensure_ascii=False)
@@ -104,9 +131,11 @@ class RuleEngine:
                 details_json=details_json,
             )
             session.add(alert)
-            await self.notifier.notify(
-                title=f"[{rule.severity}] APYX 监控告警",
-                body=summary,
+            notifications.append(
+                NotificationMessage(
+                    title=f"[{rule.severity}] APYX 监控告警",
+                    body=summary,
+                )
             )
             return alert
 
@@ -123,20 +152,22 @@ class RuleEngine:
             or now - last_notified_at >= timedelta(seconds=rule.cooldown_seconds)
         )
         if should_remind:
-            await self.notifier.notify(
-                title=f"[{rule.severity}] APYX 监控持续告警",
-                body=summary,
+            notifications.append(
+                NotificationMessage(
+                    title=f"[{rule.severity}] APYX 监控持续告警",
+                    body=summary,
+                )
             )
             active_alert.notified_at = now
         return None
 
-    async def _resolve_alert(
+    def _resolve_alert(
         self,
-        session: Session,
         rule: RuleDefinition,
         active_alert: AlertEvent,
         metric: dict,
         now: datetime,
+        notifications: list[NotificationMessage],
     ) -> AlertEvent:
         active_alert.status = "resolved"
         active_alert.threshold = rule.threshold
@@ -144,9 +175,11 @@ class RuleEngine:
         active_alert.summary = self._build_summary(rule, metric["value"], status="resolved")
         active_alert.resolved_at = now
         active_alert.last_triggered_at = now
-        await self.notifier.notify(
-            title=f"[{rule.severity}] APYX 监控恢复",
-            body=active_alert.summary,
+        notifications.append(
+            NotificationMessage(
+                title=f"[{rule.severity}] APYX 监控恢复",
+                body=active_alert.summary,
+            )
         )
         return active_alert
 

@@ -13,6 +13,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from ..config import RuleDefinition, Settings, get_asset_catalog, get_rule_catalog, get_settings
@@ -179,13 +180,24 @@ def _monthly_compounded_pct(apr_pct: float) -> float:
 
 
 def _latest_metric_map(session: Session) -> dict[tuple[str, str], MetricSnapshot]:
-    rows = session.exec(select(MetricSnapshot)).all()
-    latest: dict[tuple[str, str], MetricSnapshot] = {}
-    for row in sorted(rows, key=lambda item: item.recorded_at, reverse=True):
-        key = (row.entity_id, row.metric_name)
-        if key not in latest:
-            latest[key] = row
-    return latest
+    ranked = (
+        select(
+            MetricSnapshot.id.label("id"),
+            func.row_number()
+            .over(
+                partition_by=(MetricSnapshot.entity_id, MetricSnapshot.metric_name),
+                order_by=(MetricSnapshot.recorded_at.desc(), MetricSnapshot.id.desc()),
+            )
+            .label("rn"),
+        )
+        .subquery()
+    )
+    rows = session.exec(
+        select(MetricSnapshot)
+        .join(ranked, MetricSnapshot.id == ranked.c.id)
+        .where(ranked.c.rn == 1)
+    ).all()
+    return {(row.entity_id, row.metric_name): row for row in rows}
 
 
 def _to_beijing(dt: datetime) -> datetime:
@@ -233,10 +245,11 @@ def _bucket_series(
             MetricSnapshot.metric_name == metric_name,
             MetricSnapshot.recorded_at >= since_at,
         )
+        .order_by(MetricSnapshot.recorded_at.asc(), MetricSnapshot.id.asc())
     ).all()
     buckets: dict[datetime, list[MetricSnapshot]] = defaultdict(list)
     interval_seconds = bucket_minutes * 60
-    for row in sorted(rows, key=lambda item: _ensure_utc(item.recorded_at)):
+    for row in rows:
         recorded_at = _ensure_utc(row.recorded_at)
         bucket_ts = int(recorded_at.timestamp() // interval_seconds * interval_seconds)
         bucket_at = datetime.fromtimestamp(bucket_ts, tz=timezone.utc)
@@ -527,11 +540,12 @@ def _render_charts(session: Session, hours: int) -> str:
 
 
 def _render_alerts(session: Session) -> str:
-    alerts = sorted(
-        session.exec(select(AlertEvent).where(AlertEvent.status == "firing")).all(),
-        key=lambda row: row.last_triggered_at,
-        reverse=True,
-    )[:20]
+    alerts = session.exec(
+        select(AlertEvent)
+        .where(AlertEvent.status == "firing")
+        .order_by(AlertEvent.last_triggered_at.desc(), AlertEvent.id.desc())
+        .limit(20)
+    ).all()
     if not alerts:
         return '<tr><td colspan="6">当前无告警</td></tr>'
     rows = []
