@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from datetime import datetime, timezone
 import logging
@@ -141,6 +142,9 @@ class OnChainCollector(BaseCollector):
         self._providers: dict[str, Web3] = {}
 
     async def collect(self) -> list[MetricPoint]:
+        return await asyncio.to_thread(self._collect)
+
+    def _collect(self) -> list[MetricPoint]:
         metrics: list[MetricPoint] = []
         recorded_at = datetime.now(timezone.utc)
         chain_map = self.catalog.chain_map()
@@ -519,6 +523,9 @@ class OnChainCollector(BaseCollector):
         return metrics
 
     async def collect_nav_curve(self) -> list[MetricPoint]:
+        return await asyncio.to_thread(self._collect_nav_curve)
+
+    def _collect_nav_curve(self) -> list[MetricPoint]:
         metrics: list[MetricPoint] = []
         recorded_at = datetime.now(timezone.utc)
         chain_map = self.catalog.chain_map()

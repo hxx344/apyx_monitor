@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from sqlmodel import Session
 
 from ..collectors import MorphoCollector, OnChainCollector, PendleCollector
-from ..collectors.base import MetricPoint
+from ..collectors.base import BaseCollector, MetricPoint
 from ..config import get_asset_catalog, get_rule_catalog, get_settings
 from ..db import engine
 from ..models import MetricSnapshot
@@ -44,17 +44,11 @@ class MonitoringService:
             return {"status": "skipped", "reason": "poll already in progress"}
 
         async with self._lock:
-            all_points: list[MetricPoint] = []
             self.last_errors = {}
-            for collector in self.collectors:
-                try:
-                    points = await collector.collect()
-                    all_points.extend(points)
-                except Exception as exc:  # noqa: BLE001
-                    logger.exception("collector %s failed", collector.name)
-                    self.last_errors[collector.name] = str(exc)
+            all_points, collect_errors = await self._collect_all()
+            self.last_errors.update(collect_errors)
 
-            evaluation = self._persist_and_evaluate(all_points)
+            evaluation = await asyncio.to_thread(self._persist_and_evaluate, all_points)
             await self._send_notifications(evaluation.notifications, self.last_errors)
 
             self.last_run_at = datetime.now(timezone.utc)
@@ -80,7 +74,7 @@ class MonitoringService:
                 logger.exception("nav/curve collector failed")
                 self.last_nav_curve_errors["nav_curve"] = str(exc)
 
-            evaluation = self._persist_and_evaluate(all_points)
+            evaluation = await asyncio.to_thread(self._persist_and_evaluate, all_points)
             await self._send_notifications(evaluation.notifications, self.last_nav_curve_errors)
 
             self.last_nav_curve_run_at = datetime.now(timezone.utc)
@@ -92,6 +86,28 @@ class MonitoringService:
                 "errors": self.last_nav_curve_errors,
                 "last_run_at": self.last_nav_curve_run_at.isoformat(),
             }
+
+    async def _collect_all(self) -> tuple[list[MetricPoint], dict[str, str]]:
+        results = await asyncio.gather(
+            *(self._collect_one(collector) for collector in self.collectors)
+        )
+        all_points: list[MetricPoint] = []
+        errors: dict[str, str] = {}
+        for collector_name, points, error in results:
+            all_points.extend(points)
+            if error is not None:
+                errors[collector_name] = error
+        return all_points, errors
+
+    @staticmethod
+    async def _collect_one(
+        collector: BaseCollector,
+    ) -> tuple[str, list[MetricPoint], str | None]:
+        try:
+            return collector.name, await collector.collect(), None
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("collector %s failed", collector.name)
+            return collector.name, [], str(exc)
 
     def _persist_and_evaluate(self, all_points: list[MetricPoint]) -> RuleEvaluationResult:
         if not all_points:
