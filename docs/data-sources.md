@@ -30,7 +30,7 @@
 - `dataUpdatedAt`
 
 ## Morpho 市场
-- PT-apyUSD-18JUN2026/USDC marketId: `0xa75bb490ecfee90c86a9d22ebc2dde42fb83478b3f18722b9fc6f5f668cab124`
+- apyUSD/USDC marketId: `0x9c28c8fa039a8df548a7f27adf062d751b0f2e9b9131931810535543adb23291`
 - GraphQL: `https://api.morpho.org/graphql`
 
 关键字段：

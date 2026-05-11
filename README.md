@@ -26,7 +26,7 @@
   - `0x50dce085af29caba28f7308bea57c4043757b491` (`YT-apxUSD-18JUN2026`)
   - `0x3c53fae231ad3c0408a8b6d33138bbff1caec330` (`YT-apyUSD-18JUN2026`)
 - Ethereum 上 Morpho 市场
-  - `0xa75bb490ecfee90c86a9d22ebc2dde42fb83478b3f18722b9fc6f5f668cab124` (`PT-apyUSD-18JUN2026/USDC`)
+  - `0x9c28c8fa039a8df548a7f27adf062d751b0f2e9b9131931810535543adb23291` (`apyUSD/USDC`)
 - Ethereum 上 Curve 池
   - `0xe41be7b340f7c2eda4da1e99b42ee1b228b526b7` (`apyUSD/apxUSD`)
 

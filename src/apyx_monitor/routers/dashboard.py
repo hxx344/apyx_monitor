@@ -45,7 +45,7 @@ CARD_DEFS = [
     {
         "entity_id": "morpho-apyusd-usdc",
         "metric_name": "available_to_borrow_usd",
-        "label": "PT-apyUSD-18JUN2026/USDC 可借款额",
+        "label": "apyUSD/USDC 可借款额",
     },
 ]
 
@@ -261,6 +261,39 @@ def _bucket_series(
     return [(bucket_at, bucket_rows[-1].value) for bucket_at, bucket_rows in sorted(buckets.items())]
 
 
+def _metric_value_24h_ago(session: Session, latest_metric: MetricSnapshot) -> float | None:
+    latest_at = _ensure_utc(latest_metric.recorded_at)
+    cutoff_at = latest_at - timedelta(hours=24)
+    earliest_acceptable_at = latest_at - timedelta(hours=23)
+    row = session.exec(
+        select(MetricSnapshot)
+        .where(
+            MetricSnapshot.entity_id == latest_metric.entity_id,
+            MetricSnapshot.metric_name == latest_metric.metric_name,
+            MetricSnapshot.recorded_at >= cutoff_at,
+            MetricSnapshot.recorded_at <= earliest_acceptable_at,
+        )
+        .order_by(MetricSnapshot.recorded_at.asc(), MetricSnapshot.id.asc())
+        .limit(1)
+    ).first()
+    return row.value if row else None
+
+
+def _format_signed_value(metric_name: str, value: float) -> str:
+    sign = "+" if value >= 0 else "-"
+    return f"{sign}{_format_value(metric_name, abs(value))}"
+
+
+def _format_24h_change(current_value: float, previous_value: float | None, metric_name: str) -> str:
+    if previous_value is None:
+        return "24h 变化：暂无足够历史数据"
+
+    absolute_change = current_value - previous_value
+    pct_change = (absolute_change / previous_value * 100) if previous_value else None
+    pct_text = f"{pct_change:+.2f}%" if pct_change is not None else "N/A"
+    return f"24h 变化：{pct_text} / {_format_signed_value(metric_name, absolute_change)}"
+
+
 def _slugify(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
 
@@ -384,7 +417,7 @@ def _build_chart_table(series_list: list[dict], limit: int = 12) -> str:
     return f'<div class="trend-table-wrap"><table class="trend-table"><thead><tr>{"".join(header)}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
 
 
-def _render_cards(latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
+def _render_cards(session: Session, latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
     cards = []
     for item in CARD_DEFS:
         if item.get("display") == "apr_apy_pair":
@@ -394,11 +427,21 @@ def _render_cards(latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
         metric = latest_map.get((item["entity_id"], item["metric_name"]))
         value = _format_value(item["metric_name"], metric.value if metric else None)
         recorded_at = f"{_format_dt(metric.recorded_at)} 北京时间" if metric else "-"
+        tvl_delta = ""
+        is_tvl_card = item["metric_name"] == "tvl_usd" and item["entity_id"] in {
+            "apxusd",
+            "apyusd",
+        }
+        if metric and is_tvl_card:
+            previous_value = _metric_value_24h_ago(session, metric)
+            delta_text = _format_24h_change(metric.value, previous_value, item["metric_name"])
+            tvl_delta = f'<div class="delta">{escape(delta_text)}</div>'
         cards.append(
             f'''
             <div class="card">
               <div class="label">{escape(item["label"])}</div>
               <div class="value">{escape(value)}</div>
+              {tvl_delta}
               <div class="meta">更新时间：{escape(recorded_at)}</div>
             </div>
             '''
@@ -865,6 +908,7 @@ def dashboard(
     .card .label {{ color: var(--muted); font-size: 13px; margin-bottom: 8px; }}
     .card .value {{ font-size: 28px; font-weight: 700; margin-bottom: 4px; }}
     .card .meta {{ color: var(--muted); font-size: 12px; }}
+    .card .delta {{ color: #cbd5e1; font-size: 12px; margin-bottom: 6px; }}
     .yield-pair {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 8px 0; }}
     .yield-stat {{ min-width: 0; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(148,163,184,0.12); background: rgba(15,23,42,0.48); }}
     .yield-stat span {{ display: block; color: var(--muted); font-size: 11px; margin-bottom: 5px; }}
@@ -949,7 +993,7 @@ def dashboard(
       </form>
     </div>
 
-    <div class="cards">{_render_cards(latest_map)}</div>
+    <div class="cards">{_render_cards(session, latest_map)}</div>
 
     <div class="grid">
             {_render_threshold_controls(rule_map, latest_map, hours, bool(threshold_updated))}
