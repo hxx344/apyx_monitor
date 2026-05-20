@@ -18,6 +18,7 @@ COMPARATORS: dict[str, Callable[[float, float], bool]] = {
     "gt": lambda current, threshold: current > threshold,
     "gte": lambda current, threshold: current >= threshold,
 }
+FEISHU_MUTED_SEVERITIES = frozenset({"P2"})
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,7 @@ class RuleEngine:
     ) -> AlertEvent | None:
         summary = self._build_summary(rule, metric["value"], status="firing")
         details_json = json.dumps(metric.get("details", {}), ensure_ascii=False)
+        should_notify = self._should_notify(rule)
 
         if active_alert is None:
             alert = AlertEvent(
@@ -127,16 +129,17 @@ class RuleEngine:
                 occurrences=1,
                 first_triggered_at=now,
                 last_triggered_at=now,
-                notified_at=now,
+                notified_at=now if should_notify else None,
                 details_json=details_json,
             )
             session.add(alert)
-            notifications.append(
-                NotificationMessage(
-                    title=f"[{rule.severity}] APYX 监控告警",
-                    body=summary,
+            if should_notify:
+                notifications.append(
+                    NotificationMessage(
+                        title=f"[{rule.severity}] APYX 监控告警",
+                        body=summary,
+                    )
                 )
-            )
             return alert
 
         active_alert.threshold = rule.threshold
@@ -151,7 +154,7 @@ class RuleEngine:
             last_notified_at is None
             or now - last_notified_at >= timedelta(seconds=rule.cooldown_seconds)
         )
-        if should_remind:
+        if should_notify and should_remind:
             notifications.append(
                 NotificationMessage(
                     title=f"[{rule.severity}] APYX 监控持续告警",
@@ -175,12 +178,13 @@ class RuleEngine:
         active_alert.summary = self._build_summary(rule, metric["value"], status="resolved")
         active_alert.resolved_at = now
         active_alert.last_triggered_at = now
-        notifications.append(
-            NotificationMessage(
-                title=f"[{rule.severity}] APYX 监控恢复",
-                body=active_alert.summary,
+        if self._should_notify(rule):
+            notifications.append(
+                NotificationMessage(
+                    title=f"[{rule.severity}] APYX 监控恢复",
+                    body=active_alert.summary,
+                )
             )
-        )
         return active_alert
 
     @staticmethod
@@ -202,3 +206,7 @@ class RuleEngine:
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value
+
+    @staticmethod
+    def _should_notify(rule: RuleDefinition) -> bool:
+        return rule.severity not in FEISHU_MUTED_SEVERITIES
