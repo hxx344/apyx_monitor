@@ -32,7 +32,8 @@
 - Ethereum 上 Curve 池
   - `0xe41be7b340f7c2eda4da1e99b42ee1b228b526b7` (`apyUSD/apxUSD`)
 - Ethereum ↔ Base 闭环跨链套利监控
-  - 默认本金档位：`1000` / `5000` / `10000` apxUSD
+  - 默认本金档位：`10000` apxUSD
+  - Pendle Hosted SDK 存在限流，套利采集遇到 `429` 会进入 10 分钟冷却并保留看板已有数据
   - 结算口径：始终以 Ethereum `apxUSD` 作为本金和最终收益资产
   - 当 Ethereum 的 `apyUSD/apxUSD` 更低时：Ethereum `apxUSD -> apyUSD`，桥 `apyUSD` 到 Base，Base `apyUSD -> apxUSD`，再桥 `apxUSD` 回 Ethereum
   - 当 Base 的 `apyUSD/apxUSD` 更低时：先桥 Ethereum `apxUSD` 到 Base，Base `apxUSD -> apyUSD`，桥 `apyUSD` 回 Ethereum，Ethereum `apyUSD -> apxUSD`

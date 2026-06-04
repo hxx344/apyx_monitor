@@ -35,6 +35,7 @@
 - 当 Ethereum 的 `apyUSD/apxUSD` 更低时：Ethereum `apxUSD -> apyUSD`，桥 `apyUSD` 到 Base，Base `apyUSD -> apxUSD`，再桥 `apxUSD` 回 Ethereum
 - 当 Base 的 `apyUSD/apxUSD` 更低时：先桥 Ethereum `apxUSD` 到 Base，Base `apxUSD -> apyUSD`，桥 `apyUSD` 回 Ethereum，Ethereum `apyUSD -> apxUSD`
 - 当前桥费与 gas 成本默认按 `0` 计入，后续可在 `config/assets.yaml` 的 `arbitrage_monitors` 中调整；桥费会按去程和回程两次扣除
+- 默认只采样 `$10,000` 本金档位；Pendle Hosted SDK 返回 `429` 时套利采集会进入 10 分钟冷却，避免继续触发限流
 
 ## Morpho 市场
 - apyUSD/USDC marketId: `0x9c28c8fa039a8df548a7f27adf062d751b0f2e9b9131931810535543adb23291`

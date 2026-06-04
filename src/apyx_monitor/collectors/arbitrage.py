@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import logging
 from typing import Any
@@ -17,11 +17,15 @@ PENDLE_SDK_BASE_URL = "https://api-v2.pendle.finance/core/v2/sdk"
 ARBITRAGE_ENTITY_ID = "arb-apyusd-apxusd-crosschain"
 BUY_SOURCE_SELL_TARGET = "buy-source-sell-target"
 BUY_TARGET_SELL_SOURCE = "buy-target-sell-source"
-QUOTE_RETRY_ATTEMPTS = 5
-QUOTE_RETRY_DELAY_SECONDS = 1.5
-QUOTE_THROTTLE_SECONDS = 1.0
+QUOTE_THROTTLE_SECONDS = 2.0
+RATE_LIMIT_COOLDOWN_SECONDS = 600
 
 logger = logging.getLogger(__name__)
+_rate_limited_until: datetime | None = None
+
+
+class PendleRateLimitedError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -80,6 +84,12 @@ class ArbitrageCollector(BaseCollector):
         self.catalog = catalog
 
     async def collect(self) -> list[MetricPoint]:
+        global _rate_limited_until
+        now = datetime.now(timezone.utc)
+        if _rate_limited_until is not None and now < _rate_limited_until:
+            logger.warning("arbitrage collector skipped because Pendle SDK is rate limited until %s", _rate_limited_until.isoformat())
+            return []
+
         asset_map = {asset.asset_id: asset for asset in self.catalog.assets}
         chain_id_map = {chain.chain: chain.chain_id for chain in self.catalog.chains}
         timeout = httpx.Timeout(self.settings.http_timeout_seconds)
@@ -110,6 +120,13 @@ class ArbitrageCollector(BaseCollector):
                                 strategy_id,
                                 float(notional_usd),
                             )
+                        except PendleRateLimitedError:
+                            _rate_limited_until = datetime.now(timezone.utc) + timedelta(seconds=RATE_LIMIT_COOLDOWN_SECONDS)
+                            logger.warning(
+                                "arbitrage collector entering Pendle SDK rate-limit cooldown until %s",
+                                _rate_limited_until.isoformat(),
+                            )
+                            return self._samples_to_metrics(samples)
                         except Exception:  # noqa: BLE001
                             logger.exception(
                                 "arbitrage sample failed: monitor=%s strategy=%s notional=%s",
@@ -484,16 +501,11 @@ class ArbitrageCollector(BaseCollector):
             "enableAggregator": "true",
             "aggregators": ",".join(monitor.aggregators),
         }
-        response: httpx.Response | None = None
-        for attempt in range(QUOTE_RETRY_ATTEMPTS):
-            await asyncio.sleep(QUOTE_THROTTLE_SECONDS)
-            response = await client.get(f"{PENDLE_SDK_BASE_URL}/{chain_id}/convert", params=params)
-            if response.status_code != 429:
-                break
-            retry_after = self._retry_after_seconds(response)
-            await asyncio.sleep(retry_after or QUOTE_RETRY_DELAY_SECONDS * (attempt + 1))
-        if response is None:
-            raise ValueError("Pendle quote response missing")
+        await asyncio.sleep(QUOTE_THROTTLE_SECONDS)
+        response = await client.get(f"{PENDLE_SDK_BASE_URL}/{chain_id}/convert", params=params)
+        if response.status_code == 429:
+            retry_after = self._retry_after_seconds(response) or RATE_LIMIT_COOLDOWN_SECONDS
+            raise PendleRateLimitedError(f"Pendle SDK rate limited; retry after {retry_after:.0f}s")
         response.raise_for_status()
         payload = response.json()
         routes = payload.get("routes") or []
