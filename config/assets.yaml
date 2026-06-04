@@ -7,6 +7,10 @@ chains:
     chain_id: 8453
     rpc_url_env: BASE_RPC_URL
     default_rpc_url: https://base.publicnode.com
+  - chain: bsc
+    chain_id: 56
+    rpc_url_env: BSC_RPC_URL
+    default_rpc_url: https://bsc.publicnode.com
 
 assets:
   - asset_id: usdc-ethereum
@@ -39,6 +43,16 @@ assets:
     standard: erc20
     price_hint_usd: 1.0
     enabled: true
+  - asset_id: apxusd-bsc
+    group_id: apxusd
+    symbol: apxUSD
+    kind: base
+    chain: bsc
+    contract_address: "0x6b3788Fd6604BBF03c5378D24e57BB334BAAD4aF"
+    decimals: 18
+    standard: erc20
+    price_hint_usd: 1.0
+    enabled: true
   - asset_id: apyusd-ethereum
     group_id: apyusd
     symbol: apyUSD
@@ -55,6 +69,16 @@ assets:
     kind: yield
     chain: base
     contract_address: "0x2c271ddF484aC0386d216eB7eB9Ff02D4Dc0F6AA"
+    decimals: 18
+    standard: erc4626
+    price_hint_usd: 1.0
+    enabled: true
+  - asset_id: apyusd-bsc
+    group_id: apyusd
+    symbol: apyUSD
+    kind: yield
+    chain: bsc
+    contract_address: "0xa14556f13516C53FF035858Ffd21E1625e7EADfd"
     decimals: 18
     standard: erc4626
     price_hint_usd: 1.0
@@ -101,6 +125,21 @@ arbitrage_monitors:
     start_asset_id: apxusd-ethereum
     intermediate_asset_id: apyusd-ethereum
     final_asset_id: apxusd-base
+    notionals_usd: [10000]
+    slippage_bps: 50
+    bridge_fee_bps: 0
+    bridge_fixed_usd: 0
+    source_gas_usd: 0
+    target_gas_usd: 0
+    enabled: true
+  - monitor_id: arb-ethereum-bsc
+    label: Ethereum ↔ BSC
+    source_chain: ethereum
+    target_chain: bsc
+    funding_asset_id: usdc-ethereum
+    start_asset_id: apxusd-ethereum
+    intermediate_asset_id: apyusd-ethereum
+    final_asset_id: apxusd-bsc
     notionals_usd: [10000]
     slippage_bps: 50
     bridge_fee_bps: 0

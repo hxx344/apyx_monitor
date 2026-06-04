@@ -15,6 +15,11 @@
 - apxUSD: `0xD993935E13851dd7517af10687EC7e5022127228`
 - apyUSD: `0x2c271ddF484aC0386d216eB7eB9Ff02D4Dc0F6AA`
 
+### BSC
+- apxUSD: `0x6b3788Fd6604BBF03c5378D24e57BB334BAAD4aF`
+- apyUSD: `0xa14556f13516C53FF035858Ffd21E1625e7EADfd`
+- APYX Pendle apxUSD market: `0x34a1caef9f303a33e5d15bc5bc85064a39b7d1df`
+
 ## Pendle 市场
 - apxUSD market: `0x50dce085af29caba28f7308bea57c4043757b491`
 - apyUSD market: `0x3c53fae231ad3c0408a8b6d33138bbff1caec330`
@@ -32,11 +37,12 @@
 
 套利报价口径：
 - 始终以 Ethereum `USDC` 作为本金和最终收益资产
-- 当 Ethereum 的 `apyUSD/apxUSD` 更低时：Ethereum `USDC -> apxUSD -> apyUSD`，桥 `apyUSD` 到 Base，Base `apyUSD -> apxUSD`，再桥 `apxUSD` 回 Ethereum，最后 `apxUSD -> USDC`
-- 当 Base 的 `apyUSD/apxUSD` 更低时：Ethereum `USDC -> apxUSD`，桥 `apxUSD` 到 Base，Base `apxUSD -> apyUSD`，桥 `apyUSD` 回 Ethereum，Ethereum `apyUSD -> apxUSD -> USDC`
+- 已配置 Ethereum ↔ Base、Ethereum ↔ BSC 两条闭环路径
+- 当 Ethereum 的 `apyUSD/apxUSD` 更低时：Ethereum `USDC -> apxUSD -> apyUSD`，桥 `apyUSD` 到目标链，目标链 `apyUSD -> apxUSD`，再桥 `apxUSD` 回 Ethereum，最后 `apxUSD -> USDC`
+- 当目标链的 `apyUSD/apxUSD` 更低时：Ethereum `USDC -> apxUSD`，桥 `apxUSD` 到目标链，目标链 `apxUSD -> apyUSD`，桥 `apyUSD` 回 Ethereum，Ethereum `apyUSD -> apxUSD -> USDC`
 - 当前桥费与 gas 成本默认按 `0` 计入，后续可在 `config/assets.yaml` 的 `arbitrage_monitors` 中调整；桥费会按去程和回程两次扣除
 - 默认只采样 Ethereum `$10,000` USDC 本金档位；Pendle Hosted SDK 返回 `429` 时套利采集会进入 10 分钟冷却，避免继续触发限流
-- 为降低 Pendle Hosted SDK 限流压力，同一轮同一本金会复用 `USDC -> apxUSD` 入场报价，最终 `apxUSD -> USDC` 出场金额按该入场有效价格反推，不再额外请求反向报价
+- 为降低 Pendle Hosted SDK 限流压力，同一轮同一本金会复用所有完全相同的 Pendle quote；最终 `apxUSD -> USDC` 出场金额按入场有效价格反推，不再额外请求反向报价，SDK 请求之间默认间隔 4 秒
 
 ## Morpho 市场
 - apyUSD/USDC marketId: `0x9c28c8fa039a8df548a7f27adf062d751b0f2e9b9131931810535543adb23291`

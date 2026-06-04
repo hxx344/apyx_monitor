@@ -17,7 +17,7 @@ PENDLE_SDK_BASE_URL = "https://api-v2.pendle.finance/core/v2/sdk"
 ARBITRAGE_ENTITY_ID = "arb-apyusd-apxusd-crosschain"
 BUY_SOURCE_SELL_TARGET = "buy-source-sell-target"
 BUY_TARGET_SELL_SOURCE = "buy-target-sell-source"
-QUOTE_THROTTLE_SECONDS = 2.0
+QUOTE_THROTTLE_SECONDS = 4.0
 RATE_LIMIT_COOLDOWN_SECONDS = 600
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ class PendleQuote:
         return self.amount_out_raw / self.amount_in_raw if self.amount_in_raw else 0.0
 
 
-QuoteCache = dict[tuple[int, str, str, int], PendleQuote]
+QuoteCache = dict[tuple[int, str, str, int, float, str, tuple[str, ...]], PendleQuote]
 
 
 @dataclass(frozen=True)
@@ -101,6 +101,7 @@ class ArbitrageCollector(BaseCollector):
         chain_id_map = {chain.chain: chain.chain_id for chain in self.catalog.chains}
         timeout = httpx.Timeout(self.settings.http_timeout_seconds)
         samples: list[ArbitrageSample] = []
+        quote_cache: QuoteCache = {}
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             for monitor in self.catalog.arbitrage_monitors:
@@ -119,7 +120,6 @@ class ArbitrageCollector(BaseCollector):
                     continue
 
                 for notional_usd in monitor.notionals_usd:
-                    quote_cache: QuoteCache = {}
                     for strategy_id in (BUY_SOURCE_SELL_TARGET, BUY_TARGET_SELL_SOURCE):
                         try:
                             sample = await self._sample_monitor(
@@ -228,13 +228,14 @@ class ArbitrageCollector(BaseCollector):
             quote_cache,
         )
         entry_apxusd_amount = entry_leg.amount_out_raw / 10 ** settlement_apxusd.decimals
-        first_leg = await self._quote(
+        first_leg = await self._quote_cached(
             client,
             settlement_chain_id,
             monitor,
             settlement_apxusd.contract_address,
             settlement_apyusd.contract_address,
             entry_leg.amount_out_raw,
+            quote_cache,
         )
         bought_apyusd_amount = first_leg.amount_out_raw / 10 ** settlement_apyusd.decimals
         remote_apyusd_raw = self._scale_raw_amount(
@@ -243,13 +244,14 @@ class ArbitrageCollector(BaseCollector):
             remote_apyusd.decimals,
         )
         remote_apyusd_amount = remote_apyusd_raw / 10 ** remote_apyusd.decimals
-        second_leg = await self._quote(
+        second_leg = await self._quote_cached(
             client,
             remote_chain_id,
             monitor,
             remote_apyusd.contract_address,
             remote_apxusd.contract_address,
             remote_apyusd_raw,
+            quote_cache,
         )
         sold_apxusd_amount = second_leg.amount_out_raw / 10 ** remote_apxusd.decimals
         final_raw = self._scale_raw_amount(
@@ -405,13 +407,14 @@ class ArbitrageCollector(BaseCollector):
         )
         remote_start_amount = remote_apxusd_raw / 10 ** remote_apxusd.decimals
 
-        first_leg = await self._quote(
+        first_leg = await self._quote_cached(
             client,
             remote_chain_id,
             monitor,
             remote_apxusd.contract_address,
             remote_apyusd.contract_address,
             remote_apxusd_raw,
+            quote_cache,
         )
         bought_apyusd_amount = first_leg.amount_out_raw / 10 ** remote_apyusd.decimals
         settlement_apyusd_raw = self._scale_raw_amount(
@@ -420,13 +423,14 @@ class ArbitrageCollector(BaseCollector):
             settlement_apyusd.decimals,
         )
         settlement_apyusd_amount = settlement_apyusd_raw / 10 ** settlement_apyusd.decimals
-        second_leg = await self._quote(
+        second_leg = await self._quote_cached(
             client,
             settlement_chain_id,
             monitor,
             settlement_apyusd.contract_address,
             settlement_apxusd.contract_address,
             settlement_apyusd_raw,
+            quote_cache,
         )
         sold_apxusd_amount = second_leg.amount_out_raw / 10 ** settlement_apxusd.decimals
         final_apxusd_amount = sold_apxusd_amount
@@ -680,7 +684,15 @@ class ArbitrageCollector(BaseCollector):
         amount_in_raw: int,
         quote_cache: QuoteCache | None,
     ) -> PendleQuote:
-        key = (chain_id, token_in.lower(), token_out.lower(), amount_in_raw)
+        key = (
+            chain_id,
+            token_in.lower(),
+            token_out.lower(),
+            amount_in_raw,
+            monitor.slippage_bps,
+            monitor.receiver_address.lower(),
+            tuple(monitor.aggregators),
+        )
         if quote_cache is not None and key in quote_cache:
             return quote_cache[key]
         quote = await self._quote_conversion(client, chain_id, monitor, token_in, token_out, amount_in_raw)
@@ -754,7 +766,7 @@ class ArbitrageCollector(BaseCollector):
 
     @staticmethod
     def _display_chain(chain: str) -> str:
-        return {"ethereum": "Ethereum", "base": "Base"}.get(chain, chain)
+        return {"ethereum": "Ethereum", "base": "Base", "bsc": "BSC"}.get(chain, chain)
 
     def _samples_to_metrics(self, samples: list[ArbitrageSample]) -> list[MetricPoint]:
         metrics: list[MetricPoint] = []

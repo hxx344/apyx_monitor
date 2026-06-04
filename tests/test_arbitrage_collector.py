@@ -56,18 +56,13 @@ class MockArbitrageCollector(ArbitrageCollector):
         token_out: str,
         amount_in_raw: int,
     ) -> PendleQuote:
-        decimals = {
-            "usdc": 6,
-            "eth-apx": 18,
-            "eth-apy": 18,
-            "base-apx": 18,
-            "base-apy": 18,
-        }
         amounts = {
             ("usdc", "eth-apx"): amount_in_raw * 10**12,
             ("eth-apx", "eth-apy"): amount_in_raw * 2,
             ("base-apy", "base-apx"): amount_in_raw * 103 // 200,
             ("base-apx", "base-apy"): amount_in_raw * 2,
+            ("bsc-apy", "bsc-apx"): amount_in_raw * 104 // 200,
+            ("bsc-apx", "bsc-apy"): amount_in_raw * 2,
             ("eth-apy", "eth-apx"): amount_in_raw * 51 // 100,
             ("eth-apx", "usdc"): amount_in_raw // 10**12,
         }
@@ -91,14 +86,14 @@ def test_reverse_arbitrage_path_is_also_measured_from_ethereum_usdc():
     asyncio.run(_run_arbitrage_profit_test(BUY_TARGET_SELL_SOURCE, 10200, 200, 2))
 
 
-def test_collect_reuses_entry_quote_and_derives_exit_quote():
+def test_collect_reuses_quotes_across_base_and_bsc_routes():
     asyncio.run(_run_collect_quote_count_test())
 
 
 async def _run_arbitrage_profit_test(strategy_id: str, final_usdc: float, profit: float, edge_pct: float):
     monitor = ArbitrageMonitorDefinition(
         monitor_id="arb-ethereum-base",
-        label="Ethereum ↔ Base",
+        label="Ethereum <-> Base",
         source_chain="ethereum",
         target_chain="base",
         funding_asset_id="usdc-ethereum",
@@ -154,9 +149,9 @@ async def _run_arbitrage_profit_test(strategy_id: str, final_usdc: float, profit
 
 
 async def _run_collect_quote_count_test():
-    monitor = ArbitrageMonitorDefinition(
+    base_monitor = ArbitrageMonitorDefinition(
         monitor_id="arb-ethereum-base",
-        label="Ethereum ↔ Base",
+        label="Ethereum <-> Base",
         source_chain="ethereum",
         target_chain="base",
         funding_asset_id="usdc-ethereum",
@@ -165,10 +160,22 @@ async def _run_collect_quote_count_test():
         final_asset_id="apxusd-base",
         notionals_usd=[10000],
     )
+    bsc_monitor = ArbitrageMonitorDefinition(
+        monitor_id="arb-ethereum-bsc",
+        label="Ethereum <-> BSC",
+        source_chain="ethereum",
+        target_chain="bsc",
+        funding_asset_id="usdc-ethereum",
+        start_asset_id="apxusd-ethereum",
+        intermediate_asset_id="apyusd-ethereum",
+        final_asset_id="apxusd-bsc",
+        notionals_usd=[10000],
+    )
     catalog = AssetCatalog(
         chains=[
             ChainDefinition(chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url=""),
             ChainDefinition(chain="base", chain_id=8453, rpc_url_env="BASE_RPC", default_rpc_url=""),
+            ChainDefinition(chain="bsc", chain_id=56, rpc_url_env="BSC_RPC", default_rpc_url=""),
         ],
         assets=[
             _asset("usdc-ethereum", "usdc", "USDC", "ethereum", "usdc", 6, enabled=False),
@@ -176,16 +183,20 @@ async def _run_collect_quote_count_test():
             _asset("apyusd-ethereum", "apyusd", "apyUSD", "ethereum", "eth-apy"),
             _asset("apxusd-base", "apxusd", "apxUSD", "base", "base-apx"),
             _asset("apyusd-base", "apyusd", "apyUSD", "base", "base-apy"),
+            _asset("apxusd-bsc", "apxusd", "apxUSD", "bsc", "bsc-apx"),
+            _asset("apyusd-bsc", "apyusd", "apyUSD", "bsc", "bsc-apy"),
         ],
         pendle_markets=[],
         morpho_markets=[],
-        arbitrage_monitors=[monitor],
+        arbitrage_monitors=[base_monitor, bsc_monitor],
     )
     collector = MockArbitrageCollector(Settings(), catalog)
 
     metrics = await collector.collect()
 
     assert metrics
-    assert len(collector.quote_calls) == 5
+    assert len(collector.quote_calls) == 7
     assert len([call for call in collector.quote_calls if call[1:] == ("usdc", "eth-apx", 10_000_000_000)]) == 1
+    assert len([call for call in collector.quote_calls if call[1] == "eth-apx" and call[2] == "eth-apy"]) == 1
+    assert len([call for call in collector.quote_calls if call[1] == "eth-apy" and call[2] == "eth-apx"]) == 1
     assert not [call for call in collector.quote_calls if call[1] == "eth-apx" and call[2] == "usdc"]

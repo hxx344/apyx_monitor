@@ -5,7 +5,7 @@
 - `apxUSD` / `apyUSD` 的 TVL 与基础链上指标
 - `yt-apxUSD` / `yt-apyUSD` 的 Pendle 隐含 APY 与相关市场指标
 - Curve `apyUSD/apxUSD` 池子的实时兑换汇率
-- Ethereum / Base `apyUSD` 与 `apxUSD` 的 PendleSwap 闭环跨链套利报价监控
+- Ethereum / Base / BSC `apyUSD` 与 `apxUSD` 的 PendleSwap 闭环跨链套利报价监控
 - Morpho 市场的可借款额、借款利率、利用率
 - 闭环跨链套利利润率超过阈值时的飞书机器人告警
 - Curve 汇率偏离净值告警、Apyx Capped Ratio 脱锚告警
@@ -23,7 +23,7 @@
 - 链上派生：Curve 汇率相对 `convertToAssets()` 的偏离幅度、Capped Ratio 相对 1.0 的脱锚幅度
 
 ### 当前默认监控对象
-- Ethereum + Base 上的 `apxUSD`、`apyUSD`
+- Ethereum + Base + BSC 上的 `apxUSD`、`apyUSD`
 - Ethereum 上 Pendle 市场
   - `0x50dce085af29caba28f7308bea57c4043757b491` (`YT-apxUSD-18JUN2026`)
   - `0x3c53fae231ad3c0408a8b6d33138bbff1caec330` (`YT-apyUSD-18JUN2026`)
@@ -31,12 +31,12 @@
   - `0x9c28c8fa039a8df548a7f27adf062d751b0f2e9b9131931810535543adb23291` (`apyUSD/USDC`)
 - Ethereum 上 Curve 池
   - `0xe41be7b340f7c2eda4da1e99b42ee1b228b526b7` (`apyUSD/apxUSD`)
-- Ethereum ↔ Base 闭环跨链套利监控
+- Ethereum ↔ Base、Ethereum ↔ BSC 闭环跨链套利监控
   - 默认本金档位：Ethereum `10000` USDC
-  - Pendle Hosted SDK 存在限流，套利采集遇到 `429` 会进入 10 分钟冷却并保留看板已有数据
+  - Pendle Hosted SDK 存在限流，套利采集遇到 `429` 会进入 10 分钟冷却并保留看板已有数据；同一轮同一本金会复用相同 quote，并以更保守的请求间隔采样
   - 结算口径：始终以 Ethereum `USDC` 作为本金和最终收益资产
-  - 当 Ethereum 的 `apyUSD/apxUSD` 更低时：Ethereum `USDC -> apxUSD -> apyUSD`，桥 `apyUSD` 到 Base，Base `apyUSD -> apxUSD`，再桥 `apxUSD` 回 Ethereum，最后 `apxUSD -> USDC`
-  - 当 Base 的 `apyUSD/apxUSD` 更低时：Ethereum `USDC -> apxUSD`，桥 `apxUSD` 到 Base，Base `apxUSD -> apyUSD`，桥 `apyUSD` 回 Ethereum，Ethereum `apyUSD -> apxUSD -> USDC`
+  - 当 Ethereum 的 `apyUSD/apxUSD` 更低时：Ethereum `USDC -> apxUSD -> apyUSD`，桥 `apyUSD` 到目标链，目标链 `apyUSD -> apxUSD`，再桥 `apxUSD` 回 Ethereum，最后 `apxUSD -> USDC`
+  - 当目标链的 `apyUSD/apxUSD` 更低时：Ethereum `USDC -> apxUSD`，桥 `apxUSD` 到目标链，目标链 `apxUSD -> apyUSD`，桥 `apyUSD` 回 Ethereum，Ethereum `apyUSD -> apxUSD -> USDC`
   - 当前桥费与 gas 成本默认按 `0` 计入，收益按闭环后回到 Ethereum 的 `USDC` 计算
 
 ## 快速启动
