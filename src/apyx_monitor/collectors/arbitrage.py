@@ -89,6 +89,8 @@ class ArbitrageCollector(BaseCollector):
     def __init__(self, settings: Settings, catalog: AssetCatalog) -> None:
         self.settings = settings
         self.catalog = catalog
+        self._next_monitor_index = 0
+        self._latest_samples: dict[str, ArbitrageSample] = {}
 
     async def collect(self) -> list[MetricPoint]:
         global _rate_limited_until
@@ -102,57 +104,111 @@ class ArbitrageCollector(BaseCollector):
         timeout = httpx.Timeout(self.settings.http_timeout_seconds)
         samples: list[ArbitrageSample] = []
         quote_cache: QuoteCache = {}
+        monitor_contexts: list[
+            tuple[
+                ArbitrageMonitorDefinition,
+                AssetDefinition,
+                AssetDefinition,
+                AssetDefinition,
+                AssetDefinition,
+                AssetDefinition,
+            ]
+        ] = []
+
+        for monitor in self.catalog.arbitrage_monitors:
+            if not monitor.enabled:
+                continue
+            settlement_apxusd = asset_map.get(monitor.start_asset_id)
+            settlement_apyusd = asset_map.get(monitor.intermediate_asset_id)
+            remote_apxusd = asset_map.get(monitor.final_asset_id)
+            remote_apyusd = self._matching_asset(asset_map, settlement_apyusd, monitor.target_chain)
+            funding_asset = (
+                asset_map.get(monitor.funding_asset_id)
+                if monitor.funding_asset_id
+                else settlement_apxusd
+            )
+            if not all([funding_asset, settlement_apxusd, settlement_apyusd, remote_apxusd, remote_apyusd]):
+                logger.warning("arbitrage monitor skipped because assets are missing: monitor=%s", monitor.monitor_id)
+                continue
+            monitor_contexts.append(
+                (
+                    monitor,
+                    funding_asset,
+                    settlement_apxusd,
+                    settlement_apyusd,
+                    remote_apxusd,
+                    remote_apyusd,
+                )
+            )
+
+        if not monitor_contexts:
+            return self._samples_to_metrics(
+                samples,
+                best_candidates=list(self._latest_samples.values()),
+                best_recorded_at=now,
+            )
+
+        selected_index = self._next_monitor_index % len(monitor_contexts)
+        self._next_monitor_index = (selected_index + 1) % len(monitor_contexts)
+        (
+            monitor,
+            funding_asset,
+            settlement_apxusd,
+            settlement_apyusd,
+            remote_apxusd,
+            remote_apyusd,
+        ) = monitor_contexts[selected_index]
+        logger.info(
+            "arbitrage collector sampling monitor %s (%s/%s)",
+            monitor.monitor_id,
+            selected_index + 1,
+            len(monitor_contexts),
+        )
 
         async with httpx.AsyncClient(timeout=timeout) as client:
-            for monitor in self.catalog.arbitrage_monitors:
-                if not monitor.enabled:
-                    continue
-                settlement_apxusd = asset_map.get(monitor.start_asset_id)
-                settlement_apyusd = asset_map.get(monitor.intermediate_asset_id)
-                remote_apxusd = asset_map.get(monitor.final_asset_id)
-                remote_apyusd = self._matching_asset(asset_map, settlement_apyusd, monitor.target_chain)
-                funding_asset = (
-                    asset_map.get(monitor.funding_asset_id)
-                    if monitor.funding_asset_id
-                    else settlement_apxusd
-                )
-                if not all([funding_asset, settlement_apxusd, settlement_apyusd, remote_apxusd, remote_apyusd]):
-                    continue
+            for notional_usd in monitor.notionals_usd:
+                for strategy_id in (BUY_SOURCE_SELL_TARGET, BUY_TARGET_SELL_SOURCE):
+                    try:
+                        sample = await self._sample_monitor(
+                            client,
+                            monitor,
+                            chain_id_map,
+                            funding_asset,
+                            settlement_apxusd,
+                            settlement_apyusd,
+                            remote_apxusd,
+                            remote_apyusd,
+                            strategy_id,
+                            float(notional_usd),
+                            quote_cache,
+                        )
+                    except PendleRateLimitedError:
+                        _rate_limited_until = datetime.now(timezone.utc) + timedelta(seconds=RATE_LIMIT_COOLDOWN_SECONDS)
+                        logger.warning(
+                            "arbitrage collector entering Pendle SDK rate-limit cooldown until %s",
+                            _rate_limited_until.isoformat(),
+                        )
+                        return self._samples_to_metrics(
+                            samples,
+                            best_candidates=list(self._latest_samples.values()),
+                            best_recorded_at=now,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "arbitrage sample failed: monitor=%s strategy=%s notional=%s",
+                            monitor.monitor_id,
+                            strategy_id,
+                            notional_usd,
+                        )
+                        continue
+                    samples.append(sample)
+                    self._latest_samples[sample.entity_id] = sample
 
-                for notional_usd in monitor.notionals_usd:
-                    for strategy_id in (BUY_SOURCE_SELL_TARGET, BUY_TARGET_SELL_SOURCE):
-                        try:
-                            sample = await self._sample_monitor(
-                                client,
-                                monitor,
-                                chain_id_map,
-                                funding_asset,
-                                settlement_apxusd,
-                                settlement_apyusd,
-                                remote_apxusd,
-                                remote_apyusd,
-                                strategy_id,
-                                float(notional_usd),
-                                quote_cache,
-                            )
-                        except PendleRateLimitedError:
-                            _rate_limited_until = datetime.now(timezone.utc) + timedelta(seconds=RATE_LIMIT_COOLDOWN_SECONDS)
-                            logger.warning(
-                                "arbitrage collector entering Pendle SDK rate-limit cooldown until %s",
-                                _rate_limited_until.isoformat(),
-                            )
-                            return self._samples_to_metrics(samples)
-                        except Exception:  # noqa: BLE001
-                            logger.exception(
-                                "arbitrage sample failed: monitor=%s strategy=%s notional=%s",
-                                monitor.monitor_id,
-                                strategy_id,
-                                notional_usd,
-                            )
-                            continue
-                        samples.append(sample)
-
-        return self._samples_to_metrics(samples)
+        return self._samples_to_metrics(
+            samples,
+            best_candidates=list(self._latest_samples.values()),
+            best_recorded_at=now,
+        )
 
     async def _sample_monitor(
         self,
@@ -768,9 +824,17 @@ class ArbitrageCollector(BaseCollector):
     def _display_chain(chain: str) -> str:
         return {"ethereum": "Ethereum", "base": "Base", "bsc": "BSC"}.get(chain, chain)
 
-    def _samples_to_metrics(self, samples: list[ArbitrageSample]) -> list[MetricPoint]:
+    def _samples_to_metrics(
+        self,
+        samples: list[ArbitrageSample],
+        *,
+        best_candidates: list[ArbitrageSample] | None = None,
+        best_recorded_at: datetime | None = None,
+    ) -> list[MetricPoint]:
         metrics: list[MetricPoint] = []
-        best_sample = max(samples, key=lambda sample: sample.net_profit_usd, default=None)
+        candidates = best_candidates if best_candidates is not None else samples
+        best_sample = max(candidates, key=lambda sample: sample.net_profit_usd, default=None)
+        best_metric_recorded_at = best_recorded_at or (best_sample.recorded_at if best_sample is not None else None)
 
         for sample in samples:
             details = self._sample_details(sample)
@@ -819,7 +883,7 @@ class ArbitrageCollector(BaseCollector):
                         value=float(value),
                         unit=unit,
                         source="pendle_sdk",
-                        recorded_at=best_sample.recorded_at,
+                        recorded_at=best_metric_recorded_at or best_sample.recorded_at,
                         details=best_details,
                     )
                 )

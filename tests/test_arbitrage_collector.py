@@ -86,7 +86,7 @@ def test_reverse_arbitrage_path_is_also_measured_from_ethereum_usdc():
     asyncio.run(_run_arbitrage_profit_test(BUY_TARGET_SELL_SOURCE, 10200, 200, 2))
 
 
-def test_collect_reuses_quotes_across_base_and_bsc_routes():
+def test_collect_rotates_base_and_bsc_routes():
     asyncio.run(_run_collect_quote_count_test())
 
 
@@ -192,11 +192,36 @@ async def _run_collect_quote_count_test():
     )
     collector = MockArbitrageCollector(Settings(), catalog)
 
-    metrics = await collector.collect()
+    first_metrics = await collector.collect()
 
-    assert metrics
-    assert len(collector.quote_calls) == 7
+    assert first_metrics
+    assert len(collector.quote_calls) == 5
     assert len([call for call in collector.quote_calls if call[1:] == ("usdc", "eth-apx", 10_000_000_000)]) == 1
     assert len([call for call in collector.quote_calls if call[1] == "eth-apx" and call[2] == "eth-apy"]) == 1
     assert len([call for call in collector.quote_calls if call[1] == "eth-apy" and call[2] == "eth-apx"]) == 1
+    assert [call for call in collector.quote_calls if call[1].startswith("base-")]
+    assert not [call for call in collector.quote_calls if call[1].startswith("bsc-")]
     assert not [call for call in collector.quote_calls if call[1] == "eth-apx" and call[2] == "usdc"]
+
+    first_best = _best_profit_metric(first_metrics)
+    assert first_best.details["sample_entity_id"] == "arb-ethereum-base-buy-source-sell-target-10000"
+
+    second_metrics = await collector.collect()
+
+    assert second_metrics
+    assert len(collector.quote_calls) == 10
+    second_collect_calls = collector.quote_calls[5:]
+    assert len([call for call in second_collect_calls if call[1:] == ("usdc", "eth-apx", 10_000_000_000)]) == 1
+    assert [call for call in second_collect_calls if call[1].startswith("bsc-")]
+    assert not [call for call in second_collect_calls if call[1].startswith("base-")]
+
+    second_best = _best_profit_metric(second_metrics)
+    assert second_best.details["sample_entity_id"] == "arb-ethereum-bsc-buy-source-sell-target-10000"
+
+
+def _best_profit_metric(metrics):
+    return next(
+        metric
+        for metric in metrics
+        if metric.entity_id == "arb-apyusd-apxusd-crosschain" and metric.metric_name == "best_net_profit_usd"
+    )

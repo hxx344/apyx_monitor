@@ -42,7 +42,7 @@
 - 当目标链的 `apyUSD/apxUSD` 更低时：Ethereum `USDC -> apxUSD`，桥 `apxUSD` 到目标链，目标链 `apxUSD -> apyUSD`，桥 `apyUSD` 回 Ethereum，Ethereum `apyUSD -> apxUSD -> USDC`
 - 当前桥费与 gas 成本默认按 `0` 计入，后续可在 `config/assets.yaml` 的 `arbitrage_monitors` 中调整；桥费会按去程和回程两次扣除
 - 默认只采样 Ethereum `$10,000` USDC 本金档位；Pendle Hosted SDK 返回 `429` 时套利采集会进入 10 分钟冷却，避免继续触发限流
-- 为降低 Pendle Hosted SDK 限流压力，同一轮同一本金会复用所有完全相同的 Pendle quote；最终 `apxUSD -> USDC` 出场金额按入场有效价格反推，不再额外请求反向报价，SDK 请求之间默认间隔 4 秒
+- 为降低 Pendle Hosted SDK 限流压力，套利采集每轮只采一条目标链，Ethereum ↔ Base 与 Ethereum ↔ BSC 交替更新；同一轮同一本金会复用所有完全相同的 Pendle quote；最终 `apxUSD -> USDC` 出场金额按入场有效价格反推，不再额外请求反向报价，SDK 请求之间默认间隔 4 秒
 
 ## Morpho 市场
 - apyUSD/USDC marketId: `0x9c28c8fa039a8df548a7f27adf062d751b0f2e9b9131931810535543adb23291`
