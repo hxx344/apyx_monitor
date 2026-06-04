@@ -7,7 +7,7 @@
 - Curve `apyUSD/apxUSD` 池子的实时兑换汇率
 - Ethereum / Base `apyUSD` 与 `apxUSD` 的 PendleSwap 闭环跨链套利报价监控
 - Morpho 市场的可借款额、借款利率、利用率
-- 阈值触发后的飞书机器人告警
+- 闭环跨链套利利润率超过阈值时的飞书机器人告警
 - Curve 汇率偏离净值告警、Apyx Capped Ratio 脱锚告警
 - FastAPI 查询接口与本地 SQLite 持久化
 
@@ -136,8 +136,8 @@ sqlite3 data/apyx_monitor.db "DELETE FROM metricsnapshot WHERE recorded_at < dat
 - `apyUSD` 作为 ERC-4626 vault，TVL 采用 `totalAssets` 近似，NAV 采用 `totalAssets / totalSupply`。
 - 默认规则仅为示例值，正式环境需按业务重新标定。
 - 已新增简单看板，可查看 TVL、底层 APY、YT 隐含 APY、Curve 汇率、Morpho 指标和闭环跨链套利报价历史趋势。
-- 默认新增两类风险告警：
-  - Curve `apyUSD/apxUSD` 汇率相对 `apyUSD.convertToAssets()` 偏离超过 `1%`
-  - `Apyx Capped Ratio` 相对 `1.0` 脱锚超过 `0.5%`
-  - 跨链套利最佳净利润超过 `$50` 且连续命中 2 次
-  - 跨链套利最佳净利率超过 `0.2%` 且连续命中 2 次
+- 默认新增风险监控：
+    - Curve `apyUSD/apxUSD` 汇率相对 `apyUSD.convertToAssets()` 偏离超过 `1%`
+    - `Apyx Capped Ratio` 相对 `1.0` 脱锚超过 `0.5%`
+    - 闭环跨链套利最佳利润率超过 `0.2%` 时发送飞书；阈值可在看板调整
+  - 其他风险规则仅在看板记录和展示，不发送飞书。

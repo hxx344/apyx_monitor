@@ -98,24 +98,14 @@ rules:
     required_consecutive_hits: 1
     enabled: true
 
-  - rule_id: crosschain_arb_profit_opportunity
-    description: apyUSD/apxUSD 跨链套利净利润机会
-    entity_id: arb-apyusd-apxusd-crosschain
-    metric_name: best_net_profit_usd
-    comparator: gt
-    threshold: 50
-    severity: P2
-    cooldown_seconds: 300
-    required_consecutive_hits: 2
-    enabled: true
-
   - rule_id: crosschain_arb_edge_opportunity
-    description: apyUSD/apxUSD 跨链套利净利率机会
+    description: 闭环跨链套利利润率机会
     entity_id: arb-apyusd-apxusd-crosschain
     metric_name: best_net_edge_pct
     comparator: gt
     threshold: 0.2
-    severity: P2
+    severity: P1
     cooldown_seconds: 300
-    required_consecutive_hits: 2
+    required_consecutive_hits: 1
+    notify_feishu: true
     enabled: true

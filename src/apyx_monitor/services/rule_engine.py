@@ -18,8 +18,6 @@ COMPARATORS: dict[str, Callable[[float, float], bool]] = {
     "gt": lambda current, threshold: current > threshold,
     "gte": lambda current, threshold: current >= threshold,
 }
-FEISHU_MUTED_SEVERITIES = frozenset({"P2"})
-
 
 @dataclass(frozen=True)
 class NotificationMessage:
@@ -110,7 +108,7 @@ class RuleEngine:
         now: datetime,
         notifications: list[NotificationMessage],
     ) -> AlertEvent | None:
-        summary = self._build_summary(rule, metric["value"], status="firing")
+        summary = self._build_summary(rule, metric["value"], status="firing", details=metric.get("details", {}))
         details_json = json.dumps(metric.get("details", {}), ensure_ascii=False)
         should_notify = self._should_notify(rule)
 
@@ -175,7 +173,12 @@ class RuleEngine:
         active_alert.status = "resolved"
         active_alert.threshold = rule.threshold
         active_alert.current_value = float(metric["value"])
-        active_alert.summary = self._build_summary(rule, metric["value"], status="resolved")
+        active_alert.summary = self._build_summary(
+            rule,
+            metric["value"],
+            status="resolved",
+            details=metric.get("details", {}),
+        )
         active_alert.resolved_at = now
         active_alert.last_triggered_at = now
         if self._should_notify(rule):
@@ -188,7 +191,14 @@ class RuleEngine:
         return active_alert
 
     @staticmethod
-    def _build_summary(rule: RuleDefinition, current_value: float, status: str) -> str:
+    def _build_summary(
+        rule: RuleDefinition,
+        current_value: float,
+        status: str,
+        details: dict | None = None,
+    ) -> str:
+        if rule.rule_id == "crosschain_arb_edge_opportunity":
+            return RuleEngine._build_arbitrage_summary(rule, current_value, status, details or {})
         operator_map = {"lt": "<", "lte": "<=", "gt": ">", "gte": ">="}
         prefix = "触发" if status == "firing" else "恢复"
         return (
@@ -200,6 +210,51 @@ class RuleEngine:
         )
 
     @staticmethod
+    def _build_arbitrage_summary(
+        rule: RuleDefinition,
+        current_value: float,
+        status: str,
+        details: dict,
+    ) -> str:
+        operator_map = {"lt": "<", "lte": "<=", "gt": ">", "gte": ">="}
+        prefix = "触发" if status == "firing" else "恢复"
+        lines = [
+            f"{prefix}规则: {rule.description}",
+            "指标: 闭环套利利润率",
+            f"当前利润率: {current_value:.6f}%",
+            f"阈值: {operator_map[rule.comparator]} {rule.threshold}%",
+        ]
+        strategy_label = details.get("strategy_label")
+        if strategy_label:
+            lines.append(f"策略: {strategy_label}")
+        notional = details.get("notional_usd")
+        if isinstance(notional, (int, float)):
+            lines.append(f"本金: ${notional:,.0f}")
+        final_amount = details.get("final_amount")
+        if isinstance(final_amount, (int, float)):
+            lines.append(f"最终 apxUSD: {final_amount:,.4f}")
+        route = RuleEngine._format_arbitrage_route(details.get("route_steps"))
+        if route:
+            lines.append(f"路径: {route}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_arbitrage_route(steps: object) -> str:
+        if not isinstance(steps, list):
+            return ""
+        labels: list[str] = []
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            from_symbol = step.get("from_symbol") or step.get("from_asset") or "-"
+            to_symbol = step.get("to_symbol") or step.get("to_asset") or "-"
+            if step.get("type") == "bridge":
+                labels.append(f"{from_symbol} bridge {step.get('from_chain', '-')}->{step.get('to_chain', '-')}")
+            elif step.get("type") == "swap":
+                labels.append(f"{step.get('chain', '-')}: {from_symbol}->{to_symbol}")
+        return " | ".join(labels)
+
+    @staticmethod
     def _ensure_aware(value: datetime | None) -> datetime | None:
         if value is None:
             return None
@@ -209,4 +264,4 @@ class RuleEngine:
 
     @staticmethod
     def _should_notify(rule: RuleDefinition) -> bool:
-        return rule.severity not in FEISHU_MUTED_SEVERITIES
+        return rule.notify_feishu

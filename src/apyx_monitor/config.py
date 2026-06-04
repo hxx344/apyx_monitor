@@ -131,6 +131,7 @@ class RuleDefinition(BaseModel):
     severity: Literal["P1", "P2", "P3"] = "P2"
     cooldown_seconds: int = 900
     required_consecutive_hits: int = 1
+    notify_feishu: bool = False
     enabled: bool = True
 
 

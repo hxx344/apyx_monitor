@@ -121,7 +121,6 @@ THRESHOLD_RULE_IDS = [
     "morpho_apyusd_usdc_borrow_apy_ceiling",
     "curve_apyusd_apxusd_rate_deviation_ceiling",
     "apyx_capped_ratio_deviation_ceiling",
-    "crosschain_arb_profit_opportunity",
     "crosschain_arb_edge_opportunity",
 ]
 
@@ -544,7 +543,7 @@ def _render_threshold_controls(
                             <input type="hidden" name="rule_id" value="{escape(rule.rule_id)}" />
                             <input type="hidden" name="hours" value="{hours}" />
                             <div class="threshold-title">{escape(rule.description)}</div>
-                            <div class="threshold-meta">告警条件：当前值 {escape(operator_label.get(rule.comparator, rule.comparator))} 阈值时记录告警；P1 发送飞书，P2 仅看板展示</div>
+                            <div class="threshold-meta">告警条件：当前值 {escape(operator_label.get(rule.comparator, rule.comparator))} 阈值时记录告警；仅闭环套利利润率规则发送飞书</div>
                             <div class="threshold-stats">
                                 <div><span>当前值</span><strong>{escape(_format_value(rule.metric_name, current_value))}</strong></div>
                                 <div><span>当前阈值</span><strong>{escape(_format_value(rule.metric_name, rule.threshold))}</strong></div>
@@ -561,13 +560,13 @@ def _render_threshold_controls(
         if not rows:
                 return ""
 
-        banner = '<div class="flash success">风险告警阈值已更新，后续采集会按新阈值触发告警；P1 会发送飞书。</div>' if threshold_updated else ""
+        banner = '<div class="flash success">告警阈值已更新，后续采集会按新阈值触发；仅闭环套利利润率规则发送飞书。</div>' if threshold_updated else ""
         return f'''
         <div class="panel full threshold-panel">
             <div class="panel-head">
                 <h3>风险监控 · 告警阈值</h3>
                 <div class="legend">
-                    <span class="legend-item">支持修改：可借款额、借款利率、Curve 偏离净值、Capped Ratio 脱锚</span>
+                    <span class="legend-item">支持修改：可借款额、借款利率、Curve 偏离净值、Capped Ratio 脱锚、闭环套利利润率</span>
                 </div>
             </div>
             {banner}
