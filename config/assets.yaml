@@ -81,3 +81,19 @@ curve_pools:
     token_in_asset_id: apyusd-ethereum
     token_out_asset_id: apxusd-ethereum
     enabled: true
+
+arbitrage_monitors:
+  - monitor_id: arb-ethereum-base
+    label: Ethereum ↔ Base
+    source_chain: ethereum
+    target_chain: base
+    start_asset_id: apxusd-ethereum
+    intermediate_asset_id: apyusd-ethereum
+    final_asset_id: apxusd-base
+    notionals_usd: [1000, 5000, 10000]
+    slippage_bps: 50
+    bridge_fee_bps: 0
+    bridge_fixed_usd: 0
+    source_gas_usd: 0
+    target_gas_usd: 0
+    enabled: true

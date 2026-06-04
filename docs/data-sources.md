@@ -19,6 +19,7 @@
 - apxUSD market: `0x50dce085af29caba28f7308bea57c4043757b491`
 - apyUSD market: `0x3c53fae231ad3c0408a8b6d33138bbff1caec330`
 - API: `https://api-v2.pendle.finance/core/v1/1/markets/{marketAddress}`
+- Hosted SDK Convert API: `https://api-v2.pendle.finance/core/v2/sdk/{chainId}/convert`
 
 关键字段：
 - `yt.price.usd`
@@ -28,6 +29,12 @@
 - `liquidity.usd`
 - `underlyingAsset.price.usd`
 - `dataUpdatedAt`
+
+套利报价口径：
+- 始终以 Ethereum `apxUSD` 作为本金和最终收益资产
+- 当 Ethereum 的 `apyUSD/apxUSD` 更低时：Ethereum `apxUSD -> apyUSD`，桥 `apyUSD` 到 Base，Base `apyUSD -> apxUSD`，再桥 `apxUSD` 回 Ethereum
+- 当 Base 的 `apyUSD/apxUSD` 更低时：先桥 Ethereum `apxUSD` 到 Base，Base `apxUSD -> apyUSD`，桥 `apyUSD` 回 Ethereum，Ethereum `apyUSD -> apxUSD`
+- 当前桥费与 gas 成本默认按 `0` 计入，后续可在 `config/assets.yaml` 的 `arbitrage_monitors` 中调整；桥费会按去程和回程两次扣除
 
 ## Morpho 市场
 - apyUSD/USDC marketId: `0x9c28c8fa039a8df548a7f27adf062d751b0f2e9b9131931810535543adb23291`
@@ -72,3 +79,5 @@
 - `Curve exchange_rate`: Curve pool `get_dy(apyUSD -> apxUSD, 1e18)`
 - `Morpho available_to_borrow_usd`: `state.liquidityAssetsUsd`
 - `Morpho borrow_apy`: `state.borrowApy`
+- `best_net_profit_usd`: Ethereum 结算闭环套利策略与本金档位里最高的净利润
+- `best_net_edge_pct`: 最高净利润对应的净利率

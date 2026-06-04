@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 from html import escape
+import json
 import re
 import secrets
 import time
@@ -47,9 +48,18 @@ CARD_DEFS = [
         "metric_name": "available_to_borrow_usd",
         "label": "apyUSD/USDC 可借款额",
     },
+    {
+        "entity_id": "arb-apyusd-apxusd-crosschain",
+        "metric_name": "best_net_profit_usd",
+        "label": "闭环套利最佳净利润",
+    },
 ]
 
 MORPHO_MARKETS = [market for market in get_asset_catalog().morpho_markets if market.enabled]
+ARBITRAGE_MONITORS = [
+    monitor for monitor in get_asset_catalog().arbitrage_monitors if monitor.enabled
+]
+ARBITRAGE_STRATEGY_IDS = ("buy-source-sell-target", "buy-target-sell-source")
 
 CHART_DEFS = [
     {
@@ -98,6 +108,12 @@ CHART_DEFS = [
             {"entity_id": "morpho-apyusd-usdc", "metric_name": "capped_collateralization_ratio", "label": "Capped Ratio", "color": "#38bdf8"},
         ],
     },
+    {
+        "title": "闭环套利净利率趋势",
+        "series": [
+            {"entity_id": "arb-apyusd-apxusd-crosschain", "metric_name": "best_net_edge_pct", "label": "最佳净利率", "color": "#eab308"},
+        ],
+    },
 ]
 
 THRESHOLD_RULE_IDS = [
@@ -105,6 +121,8 @@ THRESHOLD_RULE_IDS = [
     "morpho_apyusd_usdc_borrow_apy_ceiling",
     "curve_apyusd_apxusd_rate_deviation_ceiling",
     "apyx_capped_ratio_deviation_ceiling",
+    "crosschain_arb_profit_opportunity",
+    "crosschain_arb_edge_opportunity",
 ]
 
 
@@ -164,6 +182,22 @@ def _require_dashboard_auth(request: Request) -> str:
 def _format_value(metric_name: str, value: float | None) -> str:
     if value is None:
         return "-"
+    if metric_name in {"best_net_profit_usd", "net_profit_usd", "gross_profit_usd", "total_cost_usd"}:
+        return f"${value:,.2f}"
+    if metric_name in {"best_notional_usd"}:
+        return f"${value:,.0f}"
+    if metric_name in {"best_net_edge_pct", "net_edge_pct", "gross_edge_pct"}:
+        return f"{value:.3f}%"
+    if metric_name in {
+        "bought_apyusd",
+        "sold_apxusd",
+        "source_apyusd",
+        "target_apyusd",
+        "target_apxusd",
+        "final_apxusd",
+        "intermediate_apyusd",
+    }:
+        return f"{value:,.4f}"
     if metric_name == "convert_to_assets":
         return f"{value:.6f} apxUSD"
     if metric_name == "exchange_rate":
@@ -725,6 +759,174 @@ def _render_morpho_market_sections(session: Session, latest_map: dict[tuple[str,
     return f'<div class="full morpho-section">{"".join(rows)}</div>'
 
 
+def _metric_details(metric: MetricSnapshot | None) -> dict:
+    if metric is None or not metric.details_json:
+        return {}
+    try:
+        loaded = json.loads(metric.details_json)
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _arbitrage_sample_entity_id(monitor_id: str, strategy_id: str, notional: float) -> str:
+    notional_label = f"{int(notional)}" if float(notional).is_integer() else str(notional)
+    return f"{monitor_id}-{strategy_id}-{notional_label}"
+
+
+def _format_route_amount(value: object) -> str:
+    if not isinstance(value, (int, float)):
+        return "-"
+    return f"{float(value):,.4f}"
+
+
+def _render_arbitrage_route(
+    monitor,
+    notional: float,
+    details: dict,
+    source_apyusd: float | None,
+    target_apxusd: float | None,
+    final_apxusd: float | None,
+) -> str:
+    steps = details.get("route_steps")
+    if not isinstance(steps, list) or len(steps) < 4:
+        apyusd_amount = source_apyusd
+        apxusd_amount = target_apxusd if target_apxusd is not None else final_apxusd
+        if apyusd_amount is None or apxusd_amount is None:
+            return "-"
+        source_name = monitor.source_chain
+        target_name = monitor.target_chain
+        labels = [
+            f"{source_name}: apxUSD {_format_route_amount(notional)} → apyUSD {_format_route_amount(apyusd_amount)}",
+            f"bridge {source_name} → {target_name}: apyUSD {_format_route_amount(apyusd_amount)}",
+            f"{target_name}: apyUSD {_format_route_amount(apyusd_amount)} → apxUSD {_format_route_amount(apxusd_amount)}",
+            f"bridge {target_name} → {source_name}: apxUSD {_format_route_amount(apxusd_amount)}",
+        ]
+        return '<span class="route-path">' + "</span><span class=\"route-separator\">→</span><span class=\"route-path\">".join(
+            escape(label) for label in labels
+        ) + "</span>"
+    labels = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        from_label = step.get("from_symbol") or step.get("from_asset", "-")
+        to_label = step.get("to_symbol") or step.get("to_asset", "-")
+        if step.get("type") == "swap":
+            labels.append(
+                f'{step.get("chain", "-")}: {from_label} '
+                f'{_format_route_amount(step.get("amount_in"))} → {to_label} '
+                f'{_format_route_amount(step.get("amount_out"))}'
+            )
+        elif step.get("type") == "bridge":
+            labels.append(
+                f'bridge {step.get("from_chain", "-")} → {step.get("to_chain", "-")}: '
+                f'{from_label} {_format_route_amount(step.get("amount_in"))}'
+            )
+    return '<span class="route-path">' + "</span><span class=\"route-separator\">→</span><span class=\"route-path\">".join(
+        escape(label) for label in labels
+    ) + "</span>"
+
+
+def _render_arbitrage_section(latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
+    best_profit = latest_map.get(("arb-apyusd-apxusd-crosschain", "best_net_profit_usd"))
+    best_edge = latest_map.get(("arb-apyusd-apxusd-crosschain", "best_net_edge_pct"))
+    best_notional = latest_map.get(("arb-apyusd-apxusd-crosschain", "best_notional_usd"))
+    best_total_cost = None
+    best_details = _metric_details(best_profit)
+    best_label = best_details.get("strategy_label") or best_details.get("label", "-")
+    sample_entity_id = best_details.get("sample_entity_id")
+    if isinstance(sample_entity_id, str):
+        best_total_cost = latest_map.get((sample_entity_id, "total_cost_usd"))
+    best_updated_at = f"{_format_dt(best_profit.recorded_at)} 北京时间" if best_profit else "-"
+    rows = []
+
+    for monitor in ARBITRAGE_MONITORS:
+        for notional in monitor.notionals_usd:
+            for strategy_id in ARBITRAGE_STRATEGY_IDS:
+                entity_id = _arbitrage_sample_entity_id(monitor.monitor_id, strategy_id, float(notional))
+                net_profit = latest_map.get((entity_id, "net_profit_usd"))
+                if net_profit is None:
+                    continue
+                net_edge = latest_map.get((entity_id, "net_edge_pct"))
+                gross_profit = latest_map.get((entity_id, "gross_profit_usd"))
+                bought_apyusd = latest_map.get((entity_id, "bought_apyusd")) or latest_map.get((entity_id, "intermediate_apyusd"))
+                final_apxusd = latest_map.get((entity_id, "final_apxusd"))
+                sold_apxusd = latest_map.get((entity_id, "sold_apxusd")) or latest_map.get((entity_id, "target_apxusd"))
+                total_cost = latest_map.get((entity_id, "total_cost_usd"))
+                details = _metric_details(net_profit)
+                updated_at = net_profit.recorded_at if net_profit else None
+                row_class = "positive" if net_profit and net_profit.value > 0 else "negative"
+                strategy_label = details.get("strategy_label") or strategy_id
+                sold_apxusd_value = sold_apxusd.value if sold_apxusd else (final_apxusd.value if final_apxusd else None)
+                route_markup = _render_arbitrage_route(
+                    monitor,
+                    float(notional),
+                    details,
+                    bought_apyusd.value if bought_apyusd else None,
+                    sold_apxusd_value,
+                    final_apxusd.value if final_apxusd else None,
+                )
+                row_html = f'''
+                    <tr class="{row_class}">
+                      <td>{escape(details.get("label", monitor.label))}</td>
+                      <td>{escape(str(strategy_label))}</td>
+                      <td>{escape(_format_value("best_notional_usd", float(notional)))}</td>
+                      <td>{route_markup}</td>
+                      <td>{escape(_format_value("net_profit_usd", net_profit.value if net_profit else None))}</td>
+                      <td>{escape(_format_value("net_edge_pct", net_edge.value if net_edge else None))}</td>
+                      <td>{escape(_format_value("gross_profit_usd", gross_profit.value if gross_profit else None))}</td>
+                      <td>{escape(_format_value("sold_apxusd", sold_apxusd_value))}</td>
+                      <td>{escape(_format_value("final_apxusd", final_apxusd.value if final_apxusd else None))}</td>
+                      <td>{escape(_format_value("total_cost_usd", total_cost.value if total_cost else None))}</td>
+                      <td>{escape(f"{_format_dt(updated_at)} 北京时间" if updated_at else "-")}</td>
+                    </tr>
+                    '''
+                rows.append((net_profit.value, row_html))
+
+    sorted_rows = [row_html for _, row_html in sorted(rows, key=lambda row: row[0], reverse=True)]
+    table_body = "".join(sorted_rows) if sorted_rows else '<tr><td colspan="11">暂无套利报价</td></tr>'
+    return f'''
+    <div class="panel full arbitrage-panel">
+      <div class="panel-head">
+        <div>
+          <h3>闭环跨链套利监控 · apyUSD / apxUSD</h3>
+          <p class="panel-subtitle">以 Ethereum apxUSD 为本金和结算终点；当 Ethereum 更低时在 Ethereum 买 apyUSD 后跨到 Base 卖，当 Base 更低时先把 apxUSD 跨到 Base 买 apyUSD 再回 Ethereum 卖。</p>
+        </div>
+        <div class="legend">
+          <span class="legend-item">最佳策略：{escape(str(best_label))}</span>
+          <span class="legend-item">最佳本金：{escape(_format_value("best_notional_usd", best_notional.value if best_notional else None))}</span>
+          <span class="legend-item">更新时间：{escape(best_updated_at)}</span>
+        </div>
+      </div>
+      <div class="arb-summary">
+        <div><span>最佳净利润</span><strong>{escape(_format_value("best_net_profit_usd", best_profit.value if best_profit else None))}</strong></div>
+        <div><span>最佳净利率</span><strong>{escape(_format_value("best_net_edge_pct", best_edge.value if best_edge else None))}</strong></div>
+        <div><span>闭环总成本</span><strong>{escape(_format_value("total_cost_usd", best_total_cost.value if best_total_cost else None))}</strong></div>
+      </div>
+      <div class="trend-table-wrap">
+        <table class="trend-table">
+          <thead>
+            <tr>
+              <th>方向</th>
+              <th>策略</th>
+              <th>本金</th>
+              <th>完整路径</th>
+              <th>净利润</th>
+              <th>净利率</th>
+              <th>毛利润</th>
+              <th>卖出得到 apxUSD</th>
+              <th>最终 ETH apxUSD</th>
+              <th>成本</th>
+              <th>更新时间</th>
+            </tr>
+          </thead>
+          <tbody>{table_body}</tbody>
+        </table>
+      </div>
+    </div>
+    '''
+
+
 def _render_morpho_market_table(latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
     rows = []
     for market in MORPHO_MARKETS:
@@ -823,6 +1025,7 @@ def _render_dashboard_data(
 
     <div class="grid">
             {_render_threshold_controls(rule_map, latest_map, hours, threshold_updated)}
+            {_render_arbitrage_section(latest_map)}
             {_render_charts(session, hours)}
             {_render_morpho_market_sections(session, latest_map, hours)}
             <div class="panel full">
@@ -1006,6 +1209,15 @@ def dashboard(
     .panel-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }}
     .panel-actions {{ display: flex; flex-direction: column; align-items: flex-end; gap: 10px; max-width: 72%; }}
     .panel h3 {{ margin: 0; font-size: 16px; }}
+    .panel-subtitle {{ margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }}
+    .arb-summary {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }}
+    .arb-summary div {{ padding: 12px; border-radius: 12px; background: rgba(15,23,42,0.55); border: 1px solid rgba(148,163,184,0.12); }}
+    .arb-summary span {{ display: block; color: var(--muted); font-size: 12px; margin-bottom: 5px; }}
+    .arb-summary strong {{ font-size: 20px; }}
+    .arbitrage-panel .route-path {{ display: inline; color: #cbd5e1; line-height: 1.55; }}
+    .arbitrage-panel .route-separator {{ color: var(--muted); padding: 0 6px; }}
+    .arbitrage-panel tr.positive td:nth-child(4), .arbitrage-panel tr.positive td:nth-child(5) {{ color: #86efac; }}
+    .arbitrage-panel tr.negative td:nth-child(4), .arbitrage-panel tr.negative td:nth-child(5) {{ color: #fecaca; }}
     .chart-panel {{ overflow: hidden; }}
     .morpho-section {{ display: flex; flex-direction: column; gap: 16px; }}
     .morpho-market-row {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: stretch; }}
@@ -1052,6 +1264,7 @@ def dashboard(
       .panel-head {{ flex-direction: column; }}
             .panel-actions {{ align-items: flex-start; max-width: 100%; }}
       .legend {{ justify-content: flex-start; }}
+      .arb-summary {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>

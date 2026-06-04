@@ -90,12 +90,32 @@ class CurvePoolDefinition(BaseModel):
     enabled: bool = True
 
 
+class ArbitrageMonitorDefinition(BaseModel):
+    monitor_id: str
+    label: str
+    source_chain: str
+    target_chain: str
+    start_asset_id: str
+    intermediate_asset_id: str
+    final_asset_id: str
+    notionals_usd: list[float] = Field(default_factory=lambda: [1000.0, 5000.0, 10000.0])
+    slippage_bps: float = 50.0
+    bridge_fee_bps: float = 0.0
+    bridge_fixed_usd: float = 0.0
+    source_gas_usd: float = 0.0
+    target_gas_usd: float = 0.0
+    receiver_address: str = "0x1111111111111111111111111111111111111111"
+    aggregators: list[str] = Field(default_factory=lambda: ["kyberswap", "odos"])
+    enabled: bool = True
+
+
 class AssetCatalog(BaseModel):
     chains: list[ChainDefinition]
     assets: list[AssetDefinition]
     pendle_markets: list[PendleMarketDefinition]
     morpho_markets: list[MorphoMarketDefinition]
     curve_pools: list[CurvePoolDefinition] = []
+    arbitrage_monitors: list[ArbitrageMonitorDefinition] = []
 
     def chain_map(self) -> dict[str, ChainDefinition]:
         return {chain.chain: chain for chain in self.chains}

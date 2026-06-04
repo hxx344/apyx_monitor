@@ -5,6 +5,7 @@
 - `apxUSD` / `apyUSD` 的 TVL 与基础链上指标
 - `yt-apxUSD` / `yt-apyUSD` 的 Pendle 隐含 APY 与相关市场指标
 - Curve `apyUSD/apxUSD` 池子的实时兑换汇率
+- Ethereum / Base `apyUSD` 与 `apxUSD` 的 PendleSwap 闭环跨链套利报价监控
 - Morpho 市场的可借款额、借款利率、利用率
 - 阈值触发后的飞书机器人告警
 - Curve 汇率偏离净值告警、Apyx Capped Ratio 脱锚告警
@@ -15,6 +16,7 @@
 ### 数据源
 - APYX 文档：用于发现合约与市场
 - Pendle REST：YT 价格、隐含 APY、流动性、基础资产价格
+- Pendle Hosted SDK：`apyUSD` / `apxUSD` 路由报价，用于套利空间估算
 - Morpho GraphQL：可借款额、借款利率、供给/借款、利用率
 - 链上 RPC：`apxUSD` / `apyUSD` 的 `totalSupply` / `totalAssets`
 - 链上 RPC：Curve 池 `get_dy(apyUSD -> apxUSD, 1e18)` 实时汇率
@@ -29,6 +31,12 @@
   - `0x9c28c8fa039a8df548a7f27adf062d751b0f2e9b9131931810535543adb23291` (`apyUSD/USDC`)
 - Ethereum 上 Curve 池
   - `0xe41be7b340f7c2eda4da1e99b42ee1b228b526b7` (`apyUSD/apxUSD`)
+- Ethereum ↔ Base 闭环跨链套利监控
+  - 默认本金档位：`1000` / `5000` / `10000` apxUSD
+  - 结算口径：始终以 Ethereum `apxUSD` 作为本金和最终收益资产
+  - 当 Ethereum 的 `apyUSD/apxUSD` 更低时：Ethereum `apxUSD -> apyUSD`，桥 `apyUSD` 到 Base，Base `apyUSD -> apxUSD`，再桥 `apxUSD` 回 Ethereum
+  - 当 Base 的 `apyUSD/apxUSD` 更低时：先桥 Ethereum `apxUSD` 到 Base，Base `apxUSD -> apyUSD`，桥 `apyUSD` 回 Ethereum，Ethereum `apyUSD -> apxUSD`
+  - 当前桥费与 gas 成本默认按 `0` 计入，收益按闭环后回到 Ethereum 的 `apxUSD` 计算
 
 ## 快速启动
 
@@ -127,7 +135,9 @@ sqlite3 data/apyx_monitor.db "DELETE FROM metricsnapshot WHERE recorded_at < dat
 - `apyUSD` 的底层 APR 读取官方链上 `ApyUSDRateView.apy()`，底层 APY 使用 APR 按月复利换算；`apxUSD` 暂继续使用 Pendle 市场中的 `underlyingApy`。
 - `apyUSD` 作为 ERC-4626 vault，TVL 采用 `totalAssets` 近似，NAV 采用 `totalAssets / totalSupply`。
 - 默认规则仅为示例值，正式环境需按业务重新标定。
-- 已新增简单看板，可查看 TVL、底层 APY、YT 隐含 APY、Curve 汇率和 Morpho 指标历史趋势。
+- 已新增简单看板，可查看 TVL、底层 APY、YT 隐含 APY、Curve 汇率、Morpho 指标和闭环跨链套利报价历史趋势。
 - 默认新增两类风险告警：
   - Curve `apyUSD/apxUSD` 汇率相对 `apyUSD.convertToAssets()` 偏离超过 `1%`
   - `Apyx Capped Ratio` 相对 `1.0` 脱锚超过 `0.5%`
+  - 跨链套利最佳净利润超过 `$50` 且连续命中 2 次
+  - 跨链套利最佳净利率超过 `0.2%` 且连续命中 2 次

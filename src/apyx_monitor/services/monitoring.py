@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session
 
-from ..collectors import MorphoCollector, OnChainCollector, PendleCollector
+from ..collectors import ArbitrageCollector, MorphoCollector, OnChainCollector, PendleCollector
 from ..collectors.base import BaseCollector, MetricPoint
 from ..config import get_asset_catalog, get_rule_catalog, get_settings
 from ..db import engine
@@ -29,6 +29,7 @@ class MonitoringService:
             self.onchain_collector,
             PendleCollector(self.settings, self.asset_catalog),
             MorphoCollector(self.settings, self.asset_catalog),
+            ArbitrageCollector(self.settings, self.asset_catalog),
         ]
         self.rule_engine = RuleEngine(self.rule_catalog, FeishuNotifier(self.settings))
         self._lock = asyncio.Lock()
