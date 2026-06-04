@@ -799,6 +799,70 @@ def _render_login_page(next_url: str, failed: bool = False) -> str:
         """
 
 
+def _dashboard_status_text(latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
+    latest_run = max((row.recorded_at for row in latest_map.values()), default=None)
+    return f"最近数据：{_format_dt(latest_run)} 北京时间" if latest_run else "暂无数据"
+
+
+def _render_hour_options(hours: int) -> str:
+    return "".join(
+        f'<option value="{value}" {"selected" if value == hours else ""}>近 {label}</option>'
+        for value, label in ((6, "6 小时"), (24, "24 小时"), (72, "72 小时"), (168, "7 天"))
+    )
+
+
+def _render_dashboard_data(
+    session: Session,
+    latest_map: dict[tuple[str, str], MetricSnapshot],
+    rule_map: dict[str, RuleDefinition],
+    hours: int,
+    threshold_updated: bool,
+) -> str:
+    return f"""
+    <div class="cards">{_render_cards(session, latest_map)}</div>
+
+    <div class="grid">
+            {_render_threshold_controls(rule_map, latest_map, hours, threshold_updated)}
+            {_render_charts(session, hours)}
+            {_render_morpho_market_sections(session, latest_map, hours)}
+            <div class="panel full">
+                <h3>Morpho 池子状态</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>池子</th>
+                            <th>可借款额</th>
+                            <th>借款利率</th>
+                            <th>出借利率</th>
+                            <th>利用率</th>
+                            <th>供给规模</th>
+                            <th>借款规模</th>
+                            <th>更新时间</th>
+                        </tr>
+                    </thead>
+                    <tbody>{_render_morpho_market_table(latest_map)}</tbody>
+                </table>
+            </div>
+      <div class="panel full">
+        <h3>当前告警</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>级别</th>
+              <th>对象</th>
+              <th>指标</th>
+              <th>当前值</th>
+              <th>摘要</th>
+              <th>最近触发</th>
+            </tr>
+          </thead>
+          <tbody>{_render_alerts(session)}</tbody>
+        </table>
+      </div>
+    </div>
+    """
+
+
 @router.get("/dashboard/login", response_class=HTMLResponse)
 def login_page(next_url: str = Query(default="/dashboard", alias="next"), failed: int = Query(default=0)) -> str:
         return _render_login_page(next_url, bool(failed))
@@ -859,6 +923,21 @@ def update_threshold(
     return RedirectResponse(url=f"/dashboard?hours={hours}&threshold_updated=1", status_code=303)
 
 
+@router.get("/dashboard/fragment", response_class=HTMLResponse)
+def dashboard_fragment(
+    request: Request,
+    hours: int = Query(default=24, ge=1, le=24 * 30),
+    session: Session = Depends(get_session),
+) -> str:
+    _require_dashboard_auth(request)
+    latest_map = _latest_metric_map(session)
+    rule_map = _effective_rule_map(session)
+    return f"""
+    <template data-dashboard-status="{escape(_dashboard_status_text(latest_map), quote=True)}"></template>
+    {_render_dashboard_data(session, latest_map, rule_map, hours, False)}
+    """
+
+
 @router.get("/dashboard", response_class=HTMLResponse)
 def dashboard(
     request: Request,
@@ -869,12 +948,9 @@ def dashboard(
     _require_dashboard_auth(request)
     latest_map = _latest_metric_map(session)
     rule_map = _effective_rule_map(session)
-    latest_run = max((row.recorded_at for row in latest_map.values()), default=None)
-    status_text = f"最近数据：{_format_dt(latest_run)} 北京时间" if latest_run else "暂无数据"
-    hour_options = "".join(
-        f'<option value="{value}" {"selected" if value == hours else ""}>近 {label}</option>'
-        for value, label in ((6, "6 小时"), (24, "24 小时"), (72, "72 小时"), (168, "7 天"))
-    )
+    status_text = _dashboard_status_text(latest_map)
+    hour_options = _render_hour_options(hours)
+    dashboard_data = _render_dashboard_data(session, latest_map, rule_map, hours, bool(threshold_updated))
 
     return f"""
 <!DOCTYPE html>
@@ -883,7 +959,6 @@ def dashboard(
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>APYX Monitor Dashboard</title>
-  <meta http-equiv="refresh" content="60" />
   <style>
     :root {{
       color-scheme: dark;
@@ -903,6 +978,8 @@ def dashboard(
     .actions {{ display: flex; gap: 12px; align-items: center; }}
     button, select {{ background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; cursor: pointer; }}
     .status {{ padding: 10px 14px; border-radius: 12px; background: var(--panel); border: 1px solid var(--border); color: var(--muted); }}
+    .status.loading {{ color: #bfdbfe; border-color: rgba(96,165,250,0.35); }}
+    .status.error {{ color: #fecaca; border-color: rgba(248,113,113,0.35); }}
     .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 20px; }}
     .card, .panel {{ background: rgba(17, 24, 45, 0.92); border: 1px solid var(--border); border-radius: 18px; padding: 18px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18); }}
     .card .label {{ color: var(--muted); font-size: 13px; margin-bottom: 8px; }}
@@ -987,56 +1064,23 @@ def dashboard(
       </div>
       <form class="actions" method="get" action="/dashboard">
         <select name="hours">{hour_options}</select>
-        <button type="submit">刷新</button>
+        <button type="submit" id="dashboard-refresh-button">刷新</button>
                 <button type="submit" formmethod="post" formaction="/dashboard/logout">退出</button>
-        <div class="status">{escape(status_text)}</div>
+        <div class="status" id="dashboard-status">{escape(status_text)}</div>
       </form>
     </div>
 
-    <div class="cards">{_render_cards(session, latest_map)}</div>
-
-    <div class="grid">
-            {_render_threshold_controls(rule_map, latest_map, hours, bool(threshold_updated))}
-            {_render_charts(session, hours)}
-            {_render_morpho_market_sections(session, latest_map, hours)}
-            <div class="panel full">
-                <h3>Morpho 池子状态</h3>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>池子</th>
-                            <th>可借款额</th>
-                            <th>借款利率</th>
-                            <th>出借利率</th>
-                            <th>利用率</th>
-                            <th>供给规模</th>
-                            <th>借款规模</th>
-                            <th>更新时间</th>
-                        </tr>
-                    </thead>
-                    <tbody>{_render_morpho_market_table(latest_map)}</tbody>
-                </table>
-            </div>
-      <div class="panel full">
-        <h3>当前告警</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>级别</th>
-              <th>对象</th>
-              <th>指标</th>
-              <th>当前值</th>
-              <th>摘要</th>
-              <th>最近触发</th>
-            </tr>
-          </thead>
-          <tbody>{_render_alerts(session)}</tbody>
-        </table>
-      </div>
-    </div>
+    <div id="dashboard-data">{dashboard_data}</div>
   </div>
     <script>
         (() => {{
+            const refreshForm = document.querySelector('.actions');
+            const refreshButton = document.getElementById('dashboard-refresh-button');
+            const statusNode = document.getElementById('dashboard-status');
+            const dataNode = document.getElementById('dashboard-data');
+            let refreshInFlight = false;
+            let refreshTimer = null;
+
             const wireViewTabs = () => {{
                 document.querySelectorAll('.chart-panel').forEach((panel) => {{
                     const switcher = panel.querySelector('.view-switch');
@@ -1089,9 +1133,78 @@ def dashboard(
                 }});
             }};
 
-            wireViewTabs();
-            wireLegends();
-            wireTooltips();
+            const wireDashboardInteractions = () => {{
+                wireViewTabs();
+                wireLegends();
+                wireTooltips();
+            }};
+
+            const setStatus = (text, state) => {{
+                statusNode.textContent = text;
+                statusNode.classList.toggle('loading', state === 'loading');
+                statusNode.classList.toggle('error', state === 'error');
+            }};
+
+            const refreshDashboard = async () => {{
+                if (refreshInFlight) return;
+                refreshInFlight = true;
+                refreshButton.disabled = true;
+                const previousStatus = statusNode.textContent;
+                setStatus('刷新中...', 'loading');
+                const hours = refreshForm.querySelector('select[name="hours"]').value;
+                const url = `/dashboard/fragment?hours=${{encodeURIComponent(hours)}}`;
+
+                try {{
+                    const response = await fetch(url, {{
+                        headers: {{ 'X-Requested-With': 'fetch' }},
+                        cache: 'no-store',
+                        credentials: 'same-origin',
+                    }});
+                    if (response.redirected || response.status === 401 || response.url.includes('/dashboard/login')) {{
+                        window.location.href = '/dashboard/login?next=' + encodeURIComponent(window.location.pathname + window.location.search);
+                        return;
+                    }}
+                    if (!response.ok) {{
+                        throw new Error(`HTTP ${{response.status}}`);
+                    }}
+                    const contentType = response.headers.get('content-type') || '';
+                    if (!contentType.includes('text/html')) {{
+                        throw new Error('unexpected response');
+                    }}
+                    const html = await response.text();
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(html, 'text/html');
+                    const statusTemplate = doc.querySelector('template[data-dashboard-status]');
+                    dataNode.innerHTML = html;
+                    setStatus(statusTemplate?.dataset.dashboardStatus || previousStatus, '');
+                    const currentUrl = new URL(window.location.href);
+                    currentUrl.searchParams.set('hours', hours);
+                    currentUrl.searchParams.delete('threshold_updated');
+                    window.history.replaceState(null, '', currentUrl);
+                    wireDashboardInteractions();
+                }} catch (error) {{
+                    setStatus(`刷新失败，保留当前页面：${{error.message}}`, 'error');
+                }} finally {{
+                    refreshInFlight = false;
+                    refreshButton.disabled = false;
+                }}
+            }};
+
+            refreshForm.addEventListener('submit', (event) => {{
+                const submitter = event.submitter;
+                if (submitter && submitter.formAction.endsWith('/dashboard/logout')) return;
+                event.preventDefault();
+                refreshDashboard();
+            }});
+
+            refreshForm.querySelector('select[name="hours"]').addEventListener('change', refreshDashboard);
+
+            refreshTimer = window.setInterval(refreshDashboard, 60000);
+            window.addEventListener('beforeunload', () => {{
+                if (refreshTimer) window.clearInterval(refreshTimer);
+            }});
+
+            wireDashboardInteractions();
         }})();
     </script>
 </body>
