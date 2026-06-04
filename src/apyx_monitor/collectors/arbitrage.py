@@ -42,6 +42,9 @@ class PendleQuote:
         return self.amount_out_raw / self.amount_in_raw if self.amount_in_raw else 0.0
 
 
+QuoteCache = dict[tuple[int, str, str, int], PendleQuote]
+
+
 @dataclass(frozen=True)
 class ArbitrageSample:
     monitor: ArbitrageMonitorDefinition
@@ -116,6 +119,7 @@ class ArbitrageCollector(BaseCollector):
                     continue
 
                 for notional_usd in monitor.notionals_usd:
+                    quote_cache: QuoteCache = {}
                     for strategy_id in (BUY_SOURCE_SELL_TARGET, BUY_TARGET_SELL_SOURCE):
                         try:
                             sample = await self._sample_monitor(
@@ -129,6 +133,7 @@ class ArbitrageCollector(BaseCollector):
                                 remote_apyusd,
                                 strategy_id,
                                 float(notional_usd),
+                                quote_cache,
                             )
                         except PendleRateLimitedError:
                             _rate_limited_until = datetime.now(timezone.utc) + timedelta(seconds=RATE_LIMIT_COOLDOWN_SECONDS)
@@ -161,6 +166,7 @@ class ArbitrageCollector(BaseCollector):
         remote_apyusd: AssetDefinition,
         strategy_id: str,
         notional_usd: float,
+        quote_cache: QuoteCache | None = None,
     ) -> ArbitrageSample:
         if strategy_id == BUY_SOURCE_SELL_TARGET:
             return await self._sample_buy_source_sell_target(
@@ -173,6 +179,7 @@ class ArbitrageCollector(BaseCollector):
                 remote_apxusd,
                 remote_apyusd,
                 notional_usd,
+                quote_cache,
             )
         if strategy_id == BUY_TARGET_SELL_SOURCE:
             return await self._sample_buy_target_sell_source(
@@ -185,6 +192,7 @@ class ArbitrageCollector(BaseCollector):
                 remote_apxusd,
                 remote_apyusd,
                 notional_usd,
+                quote_cache,
             )
         raise ValueError(f"Unsupported arbitrage strategy: {strategy_id}")
 
@@ -199,6 +207,7 @@ class ArbitrageCollector(BaseCollector):
         remote_apxusd: AssetDefinition,
         remote_apyusd: AssetDefinition,
         notional_usd: float,
+        quote_cache: QuoteCache | None,
     ) -> ArbitrageSample:
         recorded_at = datetime.now(timezone.utc)
         settlement_chain_id = chain_id_map[monitor.source_chain]
@@ -209,13 +218,14 @@ class ArbitrageCollector(BaseCollector):
         )
         start_amount = funding_raw / 10 ** funding_asset.decimals
 
-        entry_leg = await self._quote_conversion(
+        entry_leg = await self._quote_cached(
             client,
             settlement_chain_id,
             monitor,
             funding_asset.contract_address,
             settlement_apxusd.contract_address,
             funding_raw,
+            quote_cache,
         )
         entry_apxusd_amount = entry_leg.amount_out_raw / 10 ** settlement_apxusd.decimals
         first_leg = await self._quote(
@@ -248,10 +258,8 @@ class ArbitrageCollector(BaseCollector):
             settlement_apxusd.decimals,
         )
         final_apxusd_amount = final_raw / 10 ** settlement_apxusd.decimals
-        exit_leg = await self._quote_conversion(
-            client,
-            settlement_chain_id,
-            monitor,
+        exit_leg = self._reverse_entry_quote(
+            entry_leg,
             settlement_apxusd.contract_address,
             funding_asset.contract_address,
             final_raw,
@@ -279,7 +287,7 @@ class ArbitrageCollector(BaseCollector):
                 "from_symbol": settlement_apxusd.symbol,
                 "to_asset": settlement_apyusd.asset_id,
                 "to_symbol": settlement_apyusd.symbol,
-                "amount_in": start_amount,
+                "amount_in": entry_apxusd_amount,
                 "amount_out": bought_apyusd_amount,
             },
             {
@@ -370,6 +378,7 @@ class ArbitrageCollector(BaseCollector):
         remote_apxusd: AssetDefinition,
         remote_apyusd: AssetDefinition,
         notional_usd: float,
+        quote_cache: QuoteCache | None,
     ) -> ArbitrageSample:
         recorded_at = datetime.now(timezone.utc)
         settlement_chain_id = chain_id_map[monitor.source_chain]
@@ -379,13 +388,14 @@ class ArbitrageCollector(BaseCollector):
             funding_asset.decimals,
         )
         start_amount = funding_raw / 10 ** funding_asset.decimals
-        entry_leg = await self._quote_conversion(
+        entry_leg = await self._quote_cached(
             client,
             settlement_chain_id,
             monitor,
             funding_asset.contract_address,
             settlement_apxusd.contract_address,
             funding_raw,
+            quote_cache,
         )
         entry_apxusd_amount = entry_leg.amount_out_raw / 10 ** settlement_apxusd.decimals
         remote_apxusd_raw = self._scale_raw_amount(
@@ -420,10 +430,8 @@ class ArbitrageCollector(BaseCollector):
         )
         sold_apxusd_amount = second_leg.amount_out_raw / 10 ** settlement_apxusd.decimals
         final_apxusd_amount = sold_apxusd_amount
-        exit_leg = await self._quote_conversion(
-            client,
-            settlement_chain_id,
-            monitor,
+        exit_leg = self._reverse_entry_quote(
+            entry_leg,
             settlement_apxusd.contract_address,
             funding_asset.contract_address,
             second_leg.amount_out_raw,
@@ -661,6 +669,41 @@ class ArbitrageCollector(BaseCollector):
                 method="identity",
             )
         return await self._quote(client, chain_id, monitor, token_in, token_out, amount_in_raw)
+
+    async def _quote_cached(
+        self,
+        client: httpx.AsyncClient,
+        chain_id: int,
+        monitor: ArbitrageMonitorDefinition,
+        token_in: str,
+        token_out: str,
+        amount_in_raw: int,
+        quote_cache: QuoteCache | None,
+    ) -> PendleQuote:
+        key = (chain_id, token_in.lower(), token_out.lower(), amount_in_raw)
+        if quote_cache is not None and key in quote_cache:
+            return quote_cache[key]
+        quote = await self._quote_conversion(client, chain_id, monitor, token_in, token_out, amount_in_raw)
+        if quote_cache is not None:
+            quote_cache[key] = quote
+        return quote
+
+    @staticmethod
+    def _reverse_entry_quote(
+        entry_leg: PendleQuote,
+        token_in: str,
+        token_out: str,
+        amount_in_raw: int,
+    ) -> PendleQuote:
+        amount_out_raw = amount_in_raw * entry_leg.amount_in_raw // entry_leg.amount_out_raw
+        return PendleQuote(
+            amount_in_raw=amount_in_raw,
+            amount_out_raw=amount_out_raw,
+            min_out_raw=None,
+            token_in=token_in.lower(),
+            token_out=token_out.lower(),
+            method="derived_reverse_entry",
+        )
 
     @staticmethod
     def _retry_after_seconds(response: httpx.Response) -> float | None:
