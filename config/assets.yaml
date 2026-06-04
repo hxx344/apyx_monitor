@@ -9,6 +9,16 @@ chains:
     default_rpc_url: https://base.publicnode.com
 
 assets:
+  - asset_id: usdc-ethereum
+    group_id: usdc
+    symbol: USDC
+    kind: base
+    chain: ethereum
+    contract_address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    decimals: 6
+    standard: erc20
+    price_hint_usd: 1.0
+    enabled: false
   - asset_id: apxusd-ethereum
     group_id: apxusd
     symbol: apxUSD
@@ -87,6 +97,7 @@ arbitrage_monitors:
     label: Ethereum ↔ Base
     source_chain: ethereum
     target_chain: base
+    funding_asset_id: usdc-ethereum
     start_asset_id: apxusd-ethereum
     intermediate_asset_id: apyusd-ethereum
     final_asset_id: apxusd-base

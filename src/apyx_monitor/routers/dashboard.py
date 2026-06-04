@@ -193,7 +193,9 @@ def _format_value(metric_name: str, value: float | None) -> str:
         "source_apyusd",
         "target_apyusd",
         "target_apxusd",
+        "entry_apxusd",
         "final_apxusd",
+        "final_usdc",
         "intermediate_apyusd",
     }:
         return f"{value:,.4f}"
@@ -779,31 +781,10 @@ def _format_route_amount(value: object) -> str:
     return f"{float(value):,.4f}"
 
 
-def _render_arbitrage_route(
-    monitor,
-    notional: float,
-    details: dict,
-    source_apyusd: float | None,
-    target_apxusd: float | None,
-    final_apxusd: float | None,
-) -> str:
+def _render_arbitrage_route(details: dict) -> str:
     steps = details.get("route_steps")
-    if not isinstance(steps, list) or len(steps) < 4:
-        apyusd_amount = source_apyusd
-        apxusd_amount = target_apxusd if target_apxusd is not None else final_apxusd
-        if apyusd_amount is None or apxusd_amount is None:
-            return "-"
-        source_name = monitor.source_chain
-        target_name = monitor.target_chain
-        labels = [
-            f"{source_name}: apxUSD {_format_route_amount(notional)} → apyUSD {_format_route_amount(apyusd_amount)}",
-            f"bridge {source_name} → {target_name}: apyUSD {_format_route_amount(apyusd_amount)}",
-            f"{target_name}: apyUSD {_format_route_amount(apyusd_amount)} → apxUSD {_format_route_amount(apxusd_amount)}",
-            f"bridge {target_name} → {source_name}: apxUSD {_format_route_amount(apxusd_amount)}",
-        ]
-        return '<span class="route-path">' + "</span><span class=\"route-separator\">→</span><span class=\"route-path\">".join(
-            escape(label) for label in labels
-        ) + "</span>"
+    if not isinstance(steps, list) or not steps:
+        return "-"
     labels = []
     for step in steps:
         if not isinstance(step, dict):
@@ -848,23 +829,16 @@ def _render_arbitrage_section(latest_map: dict[tuple[str, str], MetricSnapshot])
                     continue
                 net_edge = latest_map.get((entity_id, "net_edge_pct"))
                 gross_profit = latest_map.get((entity_id, "gross_profit_usd"))
-                bought_apyusd = latest_map.get((entity_id, "bought_apyusd")) or latest_map.get((entity_id, "intermediate_apyusd"))
                 final_apxusd = latest_map.get((entity_id, "final_apxusd"))
                 sold_apxusd = latest_map.get((entity_id, "sold_apxusd")) or latest_map.get((entity_id, "target_apxusd"))
+                final_usdc = latest_map.get((entity_id, "final_usdc"))
                 total_cost = latest_map.get((entity_id, "total_cost_usd"))
                 details = _metric_details(net_profit)
                 updated_at = net_profit.recorded_at if net_profit else None
                 row_class = "positive" if net_profit and net_profit.value > 0 else "negative"
                 strategy_label = details.get("strategy_label") or strategy_id
                 sold_apxusd_value = sold_apxusd.value if sold_apxusd else (final_apxusd.value if final_apxusd else None)
-                route_markup = _render_arbitrage_route(
-                    monitor,
-                    float(notional),
-                    details,
-                    bought_apyusd.value if bought_apyusd else None,
-                    sold_apxusd_value,
-                    final_apxusd.value if final_apxusd else None,
-                )
+                route_markup = _render_arbitrage_route(details)
                 row_html = f'''
                     <tr class="{row_class}">
                       <td>{escape(details.get("label", monitor.label))}</td>
@@ -875,7 +849,7 @@ def _render_arbitrage_section(latest_map: dict[tuple[str, str], MetricSnapshot])
                       <td>{escape(_format_value("net_edge_pct", net_edge.value if net_edge else None))}</td>
                       <td>{escape(_format_value("gross_profit_usd", gross_profit.value if gross_profit else None))}</td>
                       <td>{escape(_format_value("sold_apxusd", sold_apxusd_value))}</td>
-                      <td>{escape(_format_value("final_apxusd", final_apxusd.value if final_apxusd else None))}</td>
+                      <td>{escape(_format_value("final_usdc", final_usdc.value if final_usdc else None))}</td>
                       <td>{escape(_format_value("total_cost_usd", total_cost.value if total_cost else None))}</td>
                       <td>{escape(f"{_format_dt(updated_at)} 北京时间" if updated_at else "-")}</td>
                     </tr>
@@ -889,7 +863,7 @@ def _render_arbitrage_section(latest_map: dict[tuple[str, str], MetricSnapshot])
       <div class="panel-head">
         <div>
           <h3>闭环跨链套利监控 · apyUSD / apxUSD</h3>
-          <p class="panel-subtitle">以 Ethereum apxUSD 为本金和结算终点；当 Ethereum 更低时在 Ethereum 买 apyUSD 后跨到 Base 卖，当 Base 更低时先把 apxUSD 跨到 Base 买 apyUSD 再回 Ethereum 卖。</p>
+          <p class="panel-subtitle">以 Ethereum USDC 为本金和最终结算资产；先用 USDC 买入 apxUSD，完成跨链 apyUSD / apxUSD 闭环后再换回 USDC 计算净利润。</p>
         </div>
         <div class="legend">
           <span class="legend-item">最佳策略：{escape(str(best_label))}</span>
@@ -914,7 +888,7 @@ def _render_arbitrage_section(latest_map: dict[tuple[str, str], MetricSnapshot])
               <th>净利率</th>
               <th>毛利润</th>
               <th>卖出得到 apxUSD</th>
-              <th>最终 ETH apxUSD</th>
+              <th>最终 ETH USDC</th>
               <th>成本</th>
               <th>更新时间</th>
             </tr>

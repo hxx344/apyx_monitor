@@ -31,11 +31,11 @@
 - `dataUpdatedAt`
 
 套利报价口径：
-- 始终以 Ethereum `apxUSD` 作为本金和最终收益资产
-- 当 Ethereum 的 `apyUSD/apxUSD` 更低时：Ethereum `apxUSD -> apyUSD`，桥 `apyUSD` 到 Base，Base `apyUSD -> apxUSD`，再桥 `apxUSD` 回 Ethereum
-- 当 Base 的 `apyUSD/apxUSD` 更低时：先桥 Ethereum `apxUSD` 到 Base，Base `apxUSD -> apyUSD`，桥 `apyUSD` 回 Ethereum，Ethereum `apyUSD -> apxUSD`
+- 始终以 Ethereum `USDC` 作为本金和最终收益资产
+- 当 Ethereum 的 `apyUSD/apxUSD` 更低时：Ethereum `USDC -> apxUSD -> apyUSD`，桥 `apyUSD` 到 Base，Base `apyUSD -> apxUSD`，再桥 `apxUSD` 回 Ethereum，最后 `apxUSD -> USDC`
+- 当 Base 的 `apyUSD/apxUSD` 更低时：Ethereum `USDC -> apxUSD`，桥 `apxUSD` 到 Base，Base `apxUSD -> apyUSD`，桥 `apyUSD` 回 Ethereum，Ethereum `apyUSD -> apxUSD -> USDC`
 - 当前桥费与 gas 成本默认按 `0` 计入，后续可在 `config/assets.yaml` 的 `arbitrage_monitors` 中调整；桥费会按去程和回程两次扣除
-- 默认只采样 `$10,000` 本金档位；Pendle Hosted SDK 返回 `429` 时套利采集会进入 10 分钟冷却，避免继续触发限流
+- 默认只采样 Ethereum `$10,000` USDC 本金档位；Pendle Hosted SDK 返回 `429` 时套利采集会进入 10 分钟冷却，避免继续触发限流
 
 ## Morpho 市场
 - apyUSD/USDC marketId: `0x9c28c8fa039a8df548a7f27adf062d751b0f2e9b9131931810535543adb23291`
@@ -80,5 +80,5 @@
 - `Curve exchange_rate`: Curve pool `get_dy(apyUSD -> apxUSD, 1e18)`
 - `Morpho available_to_borrow_usd`: `state.liquidityAssetsUsd`
 - `Morpho borrow_apy`: `state.borrowApy`
-- `best_net_profit_usd`: Ethereum 结算闭环套利策略与本金档位里最高的净利润
+- `best_net_profit_usd`: 以 Ethereum USDC 入场并回到 Ethereum USDC 后的最高净利润
 - `best_net_edge_pct`: 最高净利润对应的净利率

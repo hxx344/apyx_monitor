@@ -55,10 +55,14 @@ class ArbitrageSample:
     final_asset: AssetDefinition
     notional_usd: float
     start_amount: float
+    entry_leg: PendleQuote
     first_leg: PendleQuote
     second_leg: PendleQuote
+    exit_leg: PendleQuote
+    entry_apxusd_amount: float
     bought_apyusd_amount: float
     sold_apxusd_amount: float
+    final_apxusd_amount: float
     final_amount: float
     first_bridge_cost_usd: float
     second_bridge_cost_usd: float
@@ -103,7 +107,12 @@ class ArbitrageCollector(BaseCollector):
                 settlement_apyusd = asset_map.get(monitor.intermediate_asset_id)
                 remote_apxusd = asset_map.get(monitor.final_asset_id)
                 remote_apyusd = self._matching_asset(asset_map, settlement_apyusd, monitor.target_chain)
-                if not all([settlement_apxusd, settlement_apyusd, remote_apxusd, remote_apyusd]):
+                funding_asset = (
+                    asset_map.get(monitor.funding_asset_id)
+                    if monitor.funding_asset_id
+                    else settlement_apxusd
+                )
+                if not all([funding_asset, settlement_apxusd, settlement_apyusd, remote_apxusd, remote_apyusd]):
                     continue
 
                 for notional_usd in monitor.notionals_usd:
@@ -113,6 +122,7 @@ class ArbitrageCollector(BaseCollector):
                                 client,
                                 monitor,
                                 chain_id_map,
+                                funding_asset,
                                 settlement_apxusd,
                                 settlement_apyusd,
                                 remote_apxusd,
@@ -144,6 +154,7 @@ class ArbitrageCollector(BaseCollector):
         client: httpx.AsyncClient,
         monitor: ArbitrageMonitorDefinition,
         chain_id_map: dict[str, int],
+        funding_asset: AssetDefinition,
         settlement_apxusd: AssetDefinition,
         settlement_apyusd: AssetDefinition,
         remote_apxusd: AssetDefinition,
@@ -156,6 +167,7 @@ class ArbitrageCollector(BaseCollector):
                 client,
                 monitor,
                 chain_id_map,
+                funding_asset,
                 settlement_apxusd,
                 settlement_apyusd,
                 remote_apxusd,
@@ -167,6 +179,7 @@ class ArbitrageCollector(BaseCollector):
                 client,
                 monitor,
                 chain_id_map,
+                funding_asset,
                 settlement_apxusd,
                 settlement_apyusd,
                 remote_apxusd,
@@ -180,6 +193,7 @@ class ArbitrageCollector(BaseCollector):
         client: httpx.AsyncClient,
         monitor: ArbitrageMonitorDefinition,
         chain_id_map: dict[str, int],
+        funding_asset: AssetDefinition,
         settlement_apxusd: AssetDefinition,
         settlement_apyusd: AssetDefinition,
         remote_apxusd: AssetDefinition,
@@ -189,16 +203,28 @@ class ArbitrageCollector(BaseCollector):
         recorded_at = datetime.now(timezone.utc)
         settlement_chain_id = chain_id_map[monitor.source_chain]
         remote_chain_id = chain_id_map[monitor.target_chain]
-        amount_in_raw = self._to_raw_amount(notional_usd / settlement_apxusd.price_hint_usd, settlement_apxusd.decimals)
-        start_amount = amount_in_raw / 10 ** settlement_apxusd.decimals
+        funding_raw = self._to_raw_amount(
+            notional_usd / funding_asset.price_hint_usd,
+            funding_asset.decimals,
+        )
+        start_amount = funding_raw / 10 ** funding_asset.decimals
 
+        entry_leg = await self._quote_conversion(
+            client,
+            settlement_chain_id,
+            monitor,
+            funding_asset.contract_address,
+            settlement_apxusd.contract_address,
+            funding_raw,
+        )
+        entry_apxusd_amount = entry_leg.amount_out_raw / 10 ** settlement_apxusd.decimals
         first_leg = await self._quote(
             client,
             settlement_chain_id,
             monitor,
             settlement_apxusd.contract_address,
             settlement_apyusd.contract_address,
-            amount_in_raw,
+            entry_leg.amount_out_raw,
         )
         bought_apyusd_amount = first_leg.amount_out_raw / 10 ** settlement_apyusd.decimals
         remote_apyusd_raw = self._scale_raw_amount(
@@ -221,10 +247,30 @@ class ArbitrageCollector(BaseCollector):
             remote_apxusd.decimals,
             settlement_apxusd.decimals,
         )
-        final_amount = final_raw / 10 ** settlement_apxusd.decimals
+        final_apxusd_amount = final_raw / 10 ** settlement_apxusd.decimals
+        exit_leg = await self._quote_conversion(
+            client,
+            settlement_chain_id,
+            monitor,
+            settlement_apxusd.contract_address,
+            funding_asset.contract_address,
+            final_raw,
+        )
+        final_amount = exit_leg.amount_out_raw / 10 ** funding_asset.decimals
         first_bridge_cost_usd = self._bridge_cost_usd(bought_apyusd_amount, settlement_apyusd, monitor)
         second_bridge_cost_usd = self._bridge_cost_usd(sold_apxusd_amount, remote_apxusd, monitor)
         route_steps = (
+            {
+                "type": "swap",
+                "chain": monitor.source_chain,
+                "action": "enter_apxusd_on_settlement_chain",
+                "from_asset": funding_asset.asset_id,
+                "from_symbol": funding_asset.symbol,
+                "to_asset": settlement_apxusd.asset_id,
+                "to_symbol": settlement_apxusd.symbol,
+                "amount_in": start_amount,
+                "amount_out": entry_apxusd_amount,
+            },
             {
                 "type": "swap",
                 "chain": monitor.source_chain,
@@ -270,10 +316,21 @@ class ArbitrageCollector(BaseCollector):
                 "to_asset": settlement_apxusd.asset_id,
                 "to_symbol": settlement_apxusd.symbol,
                 "amount_in": sold_apxusd_amount,
-                "amount_out": final_amount,
+                "amount_out": final_apxusd_amount,
                 "cost_usd": second_bridge_cost_usd,
             },
-                        )
+            {
+                "type": "swap",
+                "chain": monitor.source_chain,
+                "action": "exit_to_funding_asset_on_settlement_chain",
+                "from_asset": settlement_apxusd.asset_id,
+                "from_symbol": settlement_apxusd.symbol,
+                "to_asset": funding_asset.asset_id,
+                "to_symbol": funding_asset.symbol,
+                "amount_in": final_apxusd_amount,
+                "amount_out": final_amount,
+            },
+        )
 
         return self._build_sample(
             monitor=monitor,
@@ -283,14 +340,18 @@ class ArbitrageCollector(BaseCollector):
             remote_chain=monitor.target_chain,
             buy_chain=monitor.source_chain,
             sell_chain=monitor.target_chain,
-            start_asset=settlement_apxusd,
-            final_asset=settlement_apxusd,
+            start_asset=funding_asset,
+            final_asset=funding_asset,
             notional_usd=notional_usd,
             start_amount=start_amount,
+            entry_leg=entry_leg,
             first_leg=first_leg,
             second_leg=second_leg,
+            exit_leg=exit_leg,
+            entry_apxusd_amount=entry_apxusd_amount,
             bought_apyusd_amount=bought_apyusd_amount,
             sold_apxusd_amount=sold_apxusd_amount,
+            final_apxusd_amount=final_apxusd_amount,
             final_amount=final_amount,
             first_bridge_cost_usd=first_bridge_cost_usd,
             second_bridge_cost_usd=second_bridge_cost_usd,
@@ -303,6 +364,7 @@ class ArbitrageCollector(BaseCollector):
         client: httpx.AsyncClient,
         monitor: ArbitrageMonitorDefinition,
         chain_id_map: dict[str, int],
+        funding_asset: AssetDefinition,
         settlement_apxusd: AssetDefinition,
         settlement_apyusd: AssetDefinition,
         remote_apxusd: AssetDefinition,
@@ -312,13 +374,22 @@ class ArbitrageCollector(BaseCollector):
         recorded_at = datetime.now(timezone.utc)
         settlement_chain_id = chain_id_map[monitor.source_chain]
         remote_chain_id = chain_id_map[monitor.target_chain]
-        settlement_apxusd_raw = self._to_raw_amount(
-            notional_usd / settlement_apxusd.price_hint_usd,
-            settlement_apxusd.decimals,
+        funding_raw = self._to_raw_amount(
+            notional_usd / funding_asset.price_hint_usd,
+            funding_asset.decimals,
         )
-        start_amount = settlement_apxusd_raw / 10 ** settlement_apxusd.decimals
+        start_amount = funding_raw / 10 ** funding_asset.decimals
+        entry_leg = await self._quote_conversion(
+            client,
+            settlement_chain_id,
+            monitor,
+            funding_asset.contract_address,
+            settlement_apxusd.contract_address,
+            funding_raw,
+        )
+        entry_apxusd_amount = entry_leg.amount_out_raw / 10 ** settlement_apxusd.decimals
         remote_apxusd_raw = self._scale_raw_amount(
-            settlement_apxusd_raw,
+            entry_leg.amount_out_raw,
             settlement_apxusd.decimals,
             remote_apxusd.decimals,
         )
@@ -348,10 +419,30 @@ class ArbitrageCollector(BaseCollector):
             settlement_apyusd_raw,
         )
         sold_apxusd_amount = second_leg.amount_out_raw / 10 ** settlement_apxusd.decimals
-        final_amount = sold_apxusd_amount
-        first_bridge_cost_usd = self._bridge_cost_usd(start_amount, settlement_apxusd, monitor)
+        final_apxusd_amount = sold_apxusd_amount
+        exit_leg = await self._quote_conversion(
+            client,
+            settlement_chain_id,
+            monitor,
+            settlement_apxusd.contract_address,
+            funding_asset.contract_address,
+            second_leg.amount_out_raw,
+        )
+        final_amount = exit_leg.amount_out_raw / 10 ** funding_asset.decimals
+        first_bridge_cost_usd = self._bridge_cost_usd(entry_apxusd_amount, settlement_apxusd, monitor)
         second_bridge_cost_usd = self._bridge_cost_usd(bought_apyusd_amount, remote_apyusd, monitor)
         route_steps = (
+            {
+                "type": "swap",
+                "chain": monitor.source_chain,
+                "action": "enter_apxusd_on_settlement_chain",
+                "from_asset": funding_asset.asset_id,
+                "from_symbol": funding_asset.symbol,
+                "to_asset": settlement_apxusd.asset_id,
+                "to_symbol": settlement_apxusd.symbol,
+                "amount_in": start_amount,
+                "amount_out": entry_apxusd_amount,
+            },
             {
                 "type": "bridge",
                 "action": "bridge_apxusd_to_remote",
@@ -361,7 +452,7 @@ class ArbitrageCollector(BaseCollector):
                 "from_symbol": settlement_apxusd.symbol,
                 "to_asset": remote_apxusd.asset_id,
                 "to_symbol": remote_apxusd.symbol,
-                "amount_in": start_amount,
+                "amount_in": entry_apxusd_amount,
                 "amount_out": remote_start_amount,
                 "cost_usd": first_bridge_cost_usd,
             },
@@ -400,6 +491,17 @@ class ArbitrageCollector(BaseCollector):
                 "amount_in": settlement_apyusd_amount,
                 "amount_out": sold_apxusd_amount,
             },
+            {
+                "type": "swap",
+                "chain": monitor.source_chain,
+                "action": "exit_to_funding_asset_on_settlement_chain",
+                "from_asset": settlement_apxusd.asset_id,
+                "from_symbol": settlement_apxusd.symbol,
+                "to_asset": funding_asset.asset_id,
+                "to_symbol": funding_asset.symbol,
+                "amount_in": final_apxusd_amount,
+                "amount_out": final_amount,
+            },
         )
 
         return self._build_sample(
@@ -410,14 +512,18 @@ class ArbitrageCollector(BaseCollector):
             remote_chain=monitor.target_chain,
             buy_chain=monitor.target_chain,
             sell_chain=monitor.source_chain,
-            start_asset=settlement_apxusd,
-            final_asset=settlement_apxusd,
+            start_asset=funding_asset,
+            final_asset=funding_asset,
             notional_usd=notional_usd,
             start_amount=start_amount,
+            entry_leg=entry_leg,
             first_leg=first_leg,
             second_leg=second_leg,
+            exit_leg=exit_leg,
+            entry_apxusd_amount=entry_apxusd_amount,
             bought_apyusd_amount=bought_apyusd_amount,
             sold_apxusd_amount=sold_apxusd_amount,
+            final_apxusd_amount=final_apxusd_amount,
             final_amount=final_amount,
             first_bridge_cost_usd=first_bridge_cost_usd,
             second_bridge_cost_usd=second_bridge_cost_usd,
@@ -439,10 +545,14 @@ class ArbitrageCollector(BaseCollector):
         final_asset: AssetDefinition,
         notional_usd: float,
         start_amount: float,
+        entry_leg: PendleQuote,
         first_leg: PendleQuote,
         second_leg: PendleQuote,
+        exit_leg: PendleQuote,
+        entry_apxusd_amount: float,
         bought_apyusd_amount: float,
         sold_apxusd_amount: float,
+        final_apxusd_amount: float,
         final_amount: float,
         first_bridge_cost_usd: float,
         second_bridge_cost_usd: float,
@@ -467,10 +577,14 @@ class ArbitrageCollector(BaseCollector):
             final_asset=final_asset,
             notional_usd=notional_usd,
             start_amount=start_amount,
+            entry_leg=entry_leg,
             first_leg=first_leg,
             second_leg=second_leg,
+            exit_leg=exit_leg,
+            entry_apxusd_amount=entry_apxusd_amount,
             bought_apyusd_amount=bought_apyusd_amount,
             sold_apxusd_amount=sold_apxusd_amount,
+            final_apxusd_amount=final_apxusd_amount,
             final_amount=final_amount,
             first_bridge_cost_usd=first_bridge_cost_usd,
             second_bridge_cost_usd=second_bridge_cost_usd,
@@ -527,6 +641,26 @@ class ArbitrageCollector(BaseCollector):
             token_out=str(output.get("token") or token_out).lower(),
             method=contract_param_info.get("method"),
         )
+
+    async def _quote_conversion(
+        self,
+        client: httpx.AsyncClient,
+        chain_id: int,
+        monitor: ArbitrageMonitorDefinition,
+        token_in: str,
+        token_out: str,
+        amount_in_raw: int,
+    ) -> PendleQuote:
+        if token_in.lower() == token_out.lower():
+            return PendleQuote(
+                amount_in_raw=amount_in_raw,
+                amount_out_raw=amount_in_raw,
+                min_out_raw=amount_in_raw,
+                token_in=token_in.lower(),
+                token_out=token_out.lower(),
+                method="identity",
+            )
+        return await self._quote(client, chain_id, monitor, token_in, token_out, amount_in_raw)
 
     @staticmethod
     def _retry_after_seconds(response: httpx.Response) -> float | None:
@@ -590,12 +724,14 @@ class ArbitrageCollector(BaseCollector):
                 ("net_profit_usd", sample.net_profit_usd, "usd"),
                 ("gross_edge_pct", sample.gross_edge_pct, "pct"),
                 ("net_edge_pct", sample.net_edge_pct, "pct"),
+                ("entry_apxusd", sample.entry_apxusd_amount, "tokens"),
                 ("bought_apyusd", sample.bought_apyusd_amount, "tokens"),
                 ("sold_apxusd", sample.sold_apxusd_amount, "tokens"),
                 ("source_apyusd", sample.bought_apyusd_amount, "tokens"),
                 ("target_apyusd", sample.bought_apyusd_amount, "tokens"),
                 ("target_apxusd", sample.sold_apxusd_amount, "tokens"),
-                ("final_apxusd", sample.final_amount, "tokens"),
+                ("final_apxusd", sample.final_apxusd_amount, "tokens"),
+                ("final_usdc", sample.final_amount, "tokens"),
                 ("intermediate_apyusd", sample.bought_apyusd_amount, "tokens"),
                 ("total_cost_usd", sample.total_cost_usd, "usd"),
             ):
@@ -649,10 +785,14 @@ class ArbitrageCollector(BaseCollector):
             "sell_chain": sample.sell_chain,
             "notional_usd": sample.notional_usd,
             "start_asset_id": sample.start_asset.asset_id,
+            "start_symbol": sample.start_asset.symbol,
             "final_asset_id": sample.final_asset.asset_id,
+            "final_symbol": sample.final_asset.symbol,
             "start_amount": sample.start_amount,
+            "entry_apxusd_amount": sample.entry_apxusd_amount,
             "bought_apyusd_amount": sample.bought_apyusd_amount,
             "sold_apxusd_amount": sample.sold_apxusd_amount,
+            "final_apxusd_amount": sample.final_apxusd_amount,
             "final_amount": sample.final_amount,
             "bridge_fee_bps": sample.monitor.bridge_fee_bps,
             "bridge_fixed_usd": sample.monitor.bridge_fixed_usd,
@@ -662,6 +802,15 @@ class ArbitrageCollector(BaseCollector):
             "target_gas_usd": sample.monitor.target_gas_usd,
             "slippage_bps": sample.monitor.slippage_bps,
             "route_steps": list(sample.route_steps),
+            "entry_leg": {
+                "token_in": sample.entry_leg.token_in,
+                "token_out": sample.entry_leg.token_out,
+                "amount_in_raw": str(sample.entry_leg.amount_in_raw),
+                "amount_out_raw": str(sample.entry_leg.amount_out_raw),
+                "min_out_raw": str(sample.entry_leg.min_out_raw) if sample.entry_leg.min_out_raw else None,
+                "rate_raw": sample.entry_leg.rate_raw,
+                "method": sample.entry_leg.method,
+            },
             "first_leg": {
                 "token_in": sample.first_leg.token_in,
                 "token_out": sample.first_leg.token_out,
@@ -679,5 +828,14 @@ class ArbitrageCollector(BaseCollector):
                 "min_out_raw": str(sample.second_leg.min_out_raw) if sample.second_leg.min_out_raw else None,
                 "rate_raw": sample.second_leg.rate_raw,
                 "method": sample.second_leg.method,
+            },
+            "exit_leg": {
+                "token_in": sample.exit_leg.token_in,
+                "token_out": sample.exit_leg.token_out,
+                "amount_in_raw": str(sample.exit_leg.amount_in_raw),
+                "amount_out_raw": str(sample.exit_leg.amount_out_raw),
+                "min_out_raw": str(sample.exit_leg.min_out_raw) if sample.exit_leg.min_out_raw else None,
+                "rate_raw": sample.exit_leg.rate_raw,
+                "method": sample.exit_leg.method,
             },
         }

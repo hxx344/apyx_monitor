@@ -229,10 +229,12 @@ class RuleEngine:
             lines.append(f"策略: {strategy_label}")
         notional = details.get("notional_usd")
         if isinstance(notional, (int, float)):
-            lines.append(f"本金: ${notional:,.0f}")
+            start_symbol = details.get("start_symbol") or "USDC"
+            lines.append(f"本金: {notional:,.0f} {start_symbol}")
         final_amount = details.get("final_amount")
         if isinstance(final_amount, (int, float)):
-            lines.append(f"最终 apxUSD: {final_amount:,.4f}")
+            final_symbol = details.get("final_symbol") or "USDC"
+            lines.append(f"最终 {final_symbol}: {final_amount:,.4f}")
         route = RuleEngine._format_arbitrage_route(details.get("route_steps"))
         if route:
             lines.append(f"路径: {route}")

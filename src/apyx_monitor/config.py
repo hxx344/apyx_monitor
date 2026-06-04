@@ -95,6 +95,7 @@ class ArbitrageMonitorDefinition(BaseModel):
     label: str
     source_chain: str
     target_chain: str
+    funding_asset_id: str | None = None
     start_asset_id: str
     intermediate_asset_id: str
     final_asset_id: str
