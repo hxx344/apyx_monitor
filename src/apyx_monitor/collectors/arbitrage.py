@@ -471,6 +471,7 @@ class ArbitrageCollector(BaseCollector):
             remote_apyusd.contract_address,
             remote_apxusd_raw,
             quote_cache,
+            allow_reverse_fallback=True,
         )
         bought_apyusd_amount = first_leg.amount_out_raw / 10 ** remote_apyusd.decimals
         settlement_apyusd_raw = self._scale_raw_amount(
@@ -487,6 +488,7 @@ class ArbitrageCollector(BaseCollector):
             settlement_apxusd.contract_address,
             settlement_apyusd_raw,
             quote_cache,
+            allow_reverse_fallback=True,
         )
         sold_apxusd_amount = second_leg.amount_out_raw / 10 ** settlement_apxusd.decimals
         final_apxusd_amount = sold_apxusd_amount
@@ -739,6 +741,8 @@ class ArbitrageCollector(BaseCollector):
         token_out: str,
         amount_in_raw: int,
         quote_cache: QuoteCache | None,
+        *,
+        allow_reverse_fallback: bool = False,
     ) -> PendleQuote:
         key = (
             chain_id,
@@ -751,10 +755,64 @@ class ArbitrageCollector(BaseCollector):
         )
         if quote_cache is not None and key in quote_cache:
             return quote_cache[key]
-        quote = await self._quote_conversion(client, chain_id, monitor, token_in, token_out, amount_in_raw)
+        try:
+            quote = await self._quote_conversion(client, chain_id, monitor, token_in, token_out, amount_in_raw)
+        except httpx.HTTPStatusError as exc:
+            if not allow_reverse_fallback or exc.response.status_code not in {500, 501, 502, 503, 504}:
+                raise
+            quote = await self._quote_from_reverse_conversion(
+                client,
+                chain_id,
+                monitor,
+                token_in,
+                token_out,
+                amount_in_raw,
+                quote_cache,
+                exc.response.status_code,
+            )
         if quote_cache is not None:
             quote_cache[key] = quote
         return quote
+
+    async def _quote_from_reverse_conversion(
+        self,
+        client: httpx.AsyncClient,
+        chain_id: int,
+        monitor: ArbitrageMonitorDefinition,
+        token_in: str,
+        token_out: str,
+        amount_in_raw: int,
+        quote_cache: QuoteCache | None,
+        failed_status_code: int,
+    ) -> PendleQuote:
+        reverse_quote = await self._quote_cached(
+            client,
+            chain_id,
+            monitor,
+            token_out,
+            token_in,
+            amount_in_raw,
+            quote_cache,
+        )
+        if reverse_quote.amount_out_raw <= 0:
+            raise ValueError("Pendle reverse route output is zero")
+
+        amount_out_raw = amount_in_raw * reverse_quote.amount_in_raw // reverse_quote.amount_out_raw
+        logger.warning(
+            "Pendle quote %s -> %s on chain %s returned %s; using reverse quote fallback",
+            token_in,
+            token_out,
+            chain_id,
+            failed_status_code,
+        )
+        return PendleQuote(
+            amount_in_raw=amount_in_raw,
+            amount_out_raw=amount_out_raw,
+            min_out_raw=None,
+            token_in=token_in.lower(),
+            token_out=token_out.lower(),
+            method=f"derived_reverse_http_{failed_status_code}",
+        )
 
     @staticmethod
     def _reverse_entry_quote(

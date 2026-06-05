@@ -78,6 +78,40 @@ class MockArbitrageCollector(ArbitrageCollector):
         )
 
 
+class FailingRemoteBuyCollector(MockArbitrageCollector):
+    async def _quote(
+        self,
+        client: httpx.AsyncClient,
+        chain_id: int,
+        monitor: ArbitrageMonitorDefinition,
+        token_in: str,
+        token_out: str,
+        amount_in_raw: int,
+    ) -> PendleQuote:
+        if token_in == "base-apx" and token_out == "base-apy":
+            request = httpx.Request("GET", "https://example.test/convert")
+            response = httpx.Response(501, request=request, json={"message": "not implemented"})
+            raise httpx.HTTPStatusError("501 Not Implemented", request=request, response=response)
+        return await super()._quote(client, chain_id, monitor, token_in, token_out, amount_in_raw)
+
+
+class FailingSettlementSellCollector(MockArbitrageCollector):
+    async def _quote(
+        self,
+        client: httpx.AsyncClient,
+        chain_id: int,
+        monitor: ArbitrageMonitorDefinition,
+        token_in: str,
+        token_out: str,
+        amount_in_raw: int,
+    ) -> PendleQuote:
+        if token_in == "eth-apy" and token_out == "eth-apx":
+            request = httpx.Request("GET", "https://example.test/convert")
+            response = httpx.Response(500, request=request, json={"message": "server error"})
+            raise httpx.HTTPStatusError("500 Internal Server Error", request=request, response=response)
+        return await super()._quote(client, chain_id, monitor, token_in, token_out, amount_in_raw)
+
+
 def test_arbitrage_profit_is_measured_from_ethereum_usdc():
     asyncio.run(_run_arbitrage_profit_test(BUY_SOURCE_SELL_TARGET, 10300, 300, 3))
 
@@ -88,6 +122,14 @@ def test_reverse_arbitrage_path_is_also_measured_from_ethereum_usdc():
 
 def test_collect_rotates_base_and_bsc_routes():
     asyncio.run(_run_collect_quote_count_test())
+
+
+def test_remote_buy_uses_reverse_quote_fallback_when_pendle_returns_501():
+    asyncio.run(_run_remote_buy_fallback_test())
+
+
+def test_settlement_sell_uses_reverse_quote_fallback_when_pendle_returns_500():
+    asyncio.run(_run_settlement_sell_fallback_test())
 
 
 async def _run_arbitrage_profit_test(strategy_id: str, final_usdc: float, profit: float, edge_pct: float):
@@ -217,6 +259,107 @@ async def _run_collect_quote_count_test():
 
     second_best = _best_profit_metric(second_metrics)
     assert second_best.details["sample_entity_id"] == "arb-ethereum-bsc-buy-source-sell-target-10000"
+
+
+async def _run_remote_buy_fallback_test():
+    monitor = ArbitrageMonitorDefinition(
+        monitor_id="arb-ethereum-base",
+        label="Ethereum <-> Base",
+        source_chain="ethereum",
+        target_chain="base",
+        funding_asset_id="usdc-ethereum",
+        start_asset_id="apxusd-ethereum",
+        intermediate_asset_id="apyusd-ethereum",
+        final_asset_id="apxusd-base",
+        notionals_usd=[10000],
+    )
+    catalog = AssetCatalog(
+        chains=[
+            ChainDefinition(chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url=""),
+            ChainDefinition(chain="base", chain_id=8453, rpc_url_env="BASE_RPC", default_rpc_url=""),
+        ],
+        assets=[
+            _asset("usdc-ethereum", "usdc", "USDC", "ethereum", "usdc", 6, enabled=False),
+            _asset("apxusd-ethereum", "apxusd", "apxUSD", "ethereum", "eth-apx"),
+            _asset("apyusd-ethereum", "apyusd", "apyUSD", "ethereum", "eth-apy"),
+            _asset("apxusd-base", "apxusd", "apxUSD", "base", "base-apx"),
+            _asset("apyusd-base", "apyusd", "apyUSD", "base", "base-apy"),
+        ],
+        pendle_markets=[],
+        morpho_markets=[],
+        arbitrage_monitors=[monitor],
+    )
+    collector = FailingRemoteBuyCollector(Settings(), catalog)
+
+    async with httpx.AsyncClient() as client:
+        sample = await collector._sample_monitor(
+            client,
+            monitor,
+            {"ethereum": 1, "base": 8453},
+            catalog.assets[0],
+            catalog.assets[1],
+            catalog.assets[2],
+            catalog.assets[3],
+            catalog.assets[4],
+            BUY_TARGET_SELL_SOURCE,
+            10000,
+            {},
+        )
+
+    assert sample.first_leg.method == "derived_reverse_http_501"
+    assert round(sample.bought_apyusd_amount, 6) == 19417.475728
+    assert round(sample.final_amount, 6) == 9902.912621
+    assert any(call[1] == "base-apy" and call[2] == "base-apx" for call in collector.quote_calls)
+
+
+async def _run_settlement_sell_fallback_test():
+    monitor = ArbitrageMonitorDefinition(
+        monitor_id="arb-ethereum-base",
+        label="Ethereum <-> Base",
+        source_chain="ethereum",
+        target_chain="base",
+        funding_asset_id="usdc-ethereum",
+        start_asset_id="apxusd-ethereum",
+        intermediate_asset_id="apyusd-ethereum",
+        final_asset_id="apxusd-base",
+        notionals_usd=[10000],
+    )
+    catalog = AssetCatalog(
+        chains=[
+            ChainDefinition(chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url=""),
+            ChainDefinition(chain="base", chain_id=8453, rpc_url_env="BASE_RPC", default_rpc_url=""),
+        ],
+        assets=[
+            _asset("usdc-ethereum", "usdc", "USDC", "ethereum", "usdc", 6, enabled=False),
+            _asset("apxusd-ethereum", "apxusd", "apxUSD", "ethereum", "eth-apx"),
+            _asset("apyusd-ethereum", "apyusd", "apyUSD", "ethereum", "eth-apy"),
+            _asset("apxusd-base", "apxusd", "apxUSD", "base", "base-apx"),
+            _asset("apyusd-base", "apyusd", "apyUSD", "base", "base-apy"),
+        ],
+        pendle_markets=[],
+        morpho_markets=[],
+        arbitrage_monitors=[monitor],
+    )
+    collector = FailingSettlementSellCollector(Settings(), catalog)
+
+    async with httpx.AsyncClient() as client:
+        sample = await collector._sample_monitor(
+            client,
+            monitor,
+            {"ethereum": 1, "base": 8453},
+            catalog.assets[0],
+            catalog.assets[1],
+            catalog.assets[2],
+            catalog.assets[3],
+            catalog.assets[4],
+            BUY_TARGET_SELL_SOURCE,
+            10000,
+            {},
+        )
+
+    assert sample.second_leg.method == "derived_reverse_http_500"
+    assert round(sample.final_amount, 6) == 10000
+    assert any(call[1] == "eth-apx" and call[2] == "eth-apy" for call in collector.quote_calls)
 
 
 def _best_profit_metric(metrics):
