@@ -27,6 +27,10 @@ class VeloraRateLimitedError(RuntimeError):
     pass
 
 
+class VeloraRouteUnavailableError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class SwapQuote:
     amount_in_raw: int
@@ -211,6 +215,16 @@ class ArbitrageCollector(BaseCollector):
                             best_candidates=list(self._latest_samples.values()),
                             best_recorded_at=now,
                         )
+                    except VeloraRouteUnavailableError as exc:
+                        logger.warning(
+                            "arbitrage sample skipped because Velora route is unavailable: "
+                            "monitor=%s strategy=%s notional=%s error=%s",
+                            monitor.monitor_id,
+                            strategy_id,
+                            notional_usd,
+                            exc,
+                        )
+                        continue
                     except Exception:  # noqa: BLE001
                         logger.exception(
                             "arbitrage sample failed: monitor=%s strategy=%s notional=%s",
@@ -738,6 +752,11 @@ class ArbitrageCollector(BaseCollector):
             raise VeloraRateLimitedError(
                 f"Velora Market API rate limited; retry after {retry_after:.0f}s"
             )
+        if self._is_route_unavailable(response):
+            raise VeloraRouteUnavailableError(
+                f"Velora route unavailable: status={response.status_code} "
+                f"chain={chain_id} token_in={token_in} token_out={token_out}"
+            )
         response.raise_for_status()
         payload = response.json()
         price_route = payload.get("priceRoute") or payload
@@ -807,11 +826,12 @@ class ArbitrageCollector(BaseCollector):
                 token_out,
                 amount_in_raw,
             )
-        except httpx.HTTPStatusError as exc:
-            if (
-                not allow_reverse_fallback
-                or exc.response.status_code not in {500, 501, 502, 503, 504}
-            ):
+        except (VeloraRouteUnavailableError, httpx.HTTPStatusError) as exc:
+            response = exc.response if isinstance(exc, httpx.HTTPStatusError) else None
+            if response is not None and not self._can_use_reverse_fallback(response):
+                raise
+            failed_status_code = response.status_code if response is not None else 422
+            if not allow_reverse_fallback:
                 raise
             quote = await self._quote_from_reverse_conversion(
                 client,
@@ -821,7 +841,7 @@ class ArbitrageCollector(BaseCollector):
                 token_out,
                 amount_in_raw,
                 quote_cache,
-                exc.response.status_code,
+                failed_status_code,
             )
         if quote_cache is not None:
             quote_cache[key] = quote
@@ -904,6 +924,14 @@ class ArbitrageCollector(BaseCollector):
             return max(0.0, float(value))
         except ValueError:
             return None
+
+    @staticmethod
+    def _can_use_reverse_fallback(response: httpx.Response) -> bool:
+        return response.status_code in {400, 404, 422, 500, 501, 502, 503, 504}
+
+    @staticmethod
+    def _is_route_unavailable(response: httpx.Response) -> bool:
+        return response.status_code in {400, 404, 422}
 
     def _token_decimals(self, token_address: str) -> int | None:
         return self._asset_decimals_by_address.get(token_address.lower())

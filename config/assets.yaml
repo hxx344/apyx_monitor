@@ -146,4 +146,4 @@ arbitrage_monitors:
     bridge_fixed_usd: 0
     source_gas_usd: 0
     target_gas_usd: 0
-    enabled: true
+    enabled: false

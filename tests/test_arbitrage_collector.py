@@ -9,6 +9,7 @@ from apyx_monitor.collectors.arbitrage import (
     BUY_TARGET_SELL_SOURCE,
     ArbitrageCollector,
     SwapQuote,
+    VeloraRouteUnavailableError,
 )
 from apyx_monitor.config import (
     ArbitrageMonitorDefinition,
@@ -95,6 +96,40 @@ class FailingRemoteBuyCollector(MockArbitrageCollector):
         return await super()._quote(client, chain_id, monitor, token_in, token_out, amount_in_raw)
 
 
+class UnprocessableRemoteBuyCollector(MockArbitrageCollector):
+    async def _quote(
+        self,
+        client: httpx.AsyncClient,
+        chain_id: int,
+        monitor: ArbitrageMonitorDefinition,
+        token_in: str,
+        token_out: str,
+        amount_in_raw: int,
+    ) -> SwapQuote:
+        if token_in == "base-apx" and token_out == "base-apy":
+            request = httpx.Request("GET", "https://api.paraswap.io/prices")
+            response = httpx.Response(422, request=request, json={"error": "no route"})
+            raise httpx.HTTPStatusError(
+                "422 Unprocessable Entity", request=request, response=response
+            )
+        return await super()._quote(client, chain_id, monitor, token_in, token_out, amount_in_raw)
+
+
+class UnavailableRemotePairCollector(MockArbitrageCollector):
+    async def _quote(
+        self,
+        client: httpx.AsyncClient,
+        chain_id: int,
+        monitor: ArbitrageMonitorDefinition,
+        token_in: str,
+        token_out: str,
+        amount_in_raw: int,
+    ) -> SwapQuote:
+        if {token_in, token_out} == {"base-apx", "base-apy"}:
+            raise VeloraRouteUnavailableError("Velora route unavailable")
+        return await super()._quote(client, chain_id, monitor, token_in, token_out, amount_in_raw)
+
+
 class FailingSettlementSellCollector(MockArbitrageCollector):
     async def _quote(
         self,
@@ -128,6 +163,14 @@ def test_collect_rotates_base_and_bsc_routes():
 
 def test_remote_buy_uses_reverse_quote_fallback_when_pendle_returns_501():
     asyncio.run(_run_remote_buy_fallback_test())
+
+
+def test_remote_buy_uses_reverse_quote_fallback_when_velora_returns_422():
+    asyncio.run(_run_remote_buy_422_fallback_test())
+
+
+def test_collect_skips_strategy_when_velora_route_is_unavailable():
+    asyncio.run(_run_route_unavailable_skip_test())
 
 
 def test_settlement_sell_uses_reverse_quote_fallback_when_pendle_returns_500():
@@ -372,6 +415,102 @@ async def _run_remote_buy_fallback_test():
     assert round(sample.bought_apyusd_amount, 6) == 19417.475728
     assert round(sample.final_amount, 6) == 9902.912621
     assert any(call[1] == "base-apy" and call[2] == "base-apx" for call in collector.quote_calls)
+
+
+async def _run_remote_buy_422_fallback_test():
+    monitor = ArbitrageMonitorDefinition(
+        monitor_id="arb-ethereum-base",
+        label="Ethereum <-> Base",
+        source_chain="ethereum",
+        target_chain="base",
+        funding_asset_id="usdc-ethereum",
+        start_asset_id="apxusd-ethereum",
+        intermediate_asset_id="apyusd-ethereum",
+        final_asset_id="apxusd-base",
+        notionals_usd=[10000],
+    )
+    catalog = AssetCatalog(
+        chains=[
+            ChainDefinition(
+                chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url=""
+            ),
+            ChainDefinition(
+                chain="base", chain_id=8453, rpc_url_env="BASE_RPC", default_rpc_url=""
+            ),
+        ],
+        assets=[
+            _asset("usdc-ethereum", "usdc", "USDC", "ethereum", "usdc", 6, enabled=False),
+            _asset("apxusd-ethereum", "apxusd", "apxUSD", "ethereum", "eth-apx"),
+            _asset("apyusd-ethereum", "apyusd", "apyUSD", "ethereum", "eth-apy"),
+            _asset("apxusd-base", "apxusd", "apxUSD", "base", "base-apx"),
+            _asset("apyusd-base", "apyusd", "apyUSD", "base", "base-apy"),
+        ],
+        pendle_markets=[],
+        morpho_markets=[],
+        arbitrage_monitors=[monitor],
+    )
+    collector = UnprocessableRemoteBuyCollector(Settings(), catalog)
+
+    async with httpx.AsyncClient() as client:
+        sample = await collector._sample_monitor(
+            client,
+            monitor,
+            {"ethereum": 1, "base": 8453},
+            catalog.assets[0],
+            catalog.assets[1],
+            catalog.assets[2],
+            catalog.assets[3],
+            catalog.assets[4],
+            BUY_TARGET_SELL_SOURCE,
+            10000,
+            {},
+        )
+
+    assert sample.first_leg.method == "derived_reverse_http_422"
+    assert round(sample.bought_apyusd_amount, 6) == 19417.475728
+    assert any(call[1] == "base-apy" and call[2] == "base-apx" for call in collector.quote_calls)
+
+
+async def _run_route_unavailable_skip_test():
+    monitor = ArbitrageMonitorDefinition(
+        monitor_id="arb-ethereum-base",
+        label="Ethereum <-> Base",
+        source_chain="ethereum",
+        target_chain="base",
+        funding_asset_id="usdc-ethereum",
+        start_asset_id="apxusd-ethereum",
+        intermediate_asset_id="apyusd-ethereum",
+        final_asset_id="apxusd-base",
+        notionals_usd=[10000],
+    )
+    catalog = AssetCatalog(
+        chains=[
+            ChainDefinition(
+                chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url=""
+            ),
+            ChainDefinition(
+                chain="base", chain_id=8453, rpc_url_env="BASE_RPC", default_rpc_url=""
+            ),
+        ],
+        assets=[
+            _asset("usdc-ethereum", "usdc", "USDC", "ethereum", "usdc", 6, enabled=False),
+            _asset("apxusd-ethereum", "apxusd", "apxUSD", "ethereum", "eth-apx"),
+            _asset("apyusd-ethereum", "apyusd", "apyUSD", "ethereum", "eth-apy"),
+            _asset("apxusd-base", "apxusd", "apxUSD", "base", "base-apx"),
+            _asset("apyusd-base", "apyusd", "apyUSD", "base", "base-apy"),
+        ],
+        pendle_markets=[],
+        morpho_markets=[],
+        arbitrage_monitors=[monitor],
+    )
+    collector = UnavailableRemotePairCollector(Settings(), catalog)
+
+    metrics = await collector.collect()
+
+    assert not any(
+        metric.entity_id == "arb-ethereum-base-buy-target-sell-source-10000"
+        for metric in metrics
+    )
 
 
 async def _run_settlement_sell_fallback_test():
