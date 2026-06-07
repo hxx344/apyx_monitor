@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-import logging
 from typing import Any
 
 import httpx
@@ -12,8 +12,7 @@ import httpx
 from ..config import ArbitrageMonitorDefinition, AssetCatalog, AssetDefinition, Settings
 from .base import BaseCollector, MetricPoint
 
-
-PENDLE_SDK_BASE_URL = "https://api-v2.pendle.finance/core/v2/sdk"
+VELORA_MARKET_API_BASE_URL = "https://api.paraswap.io"
 ARBITRAGE_ENTITY_ID = "arb-apyusd-apxusd-crosschain"
 BUY_SOURCE_SELL_TARGET = "buy-source-sell-target"
 BUY_TARGET_SELL_SOURCE = "buy-target-sell-source"
@@ -24,25 +23,26 @@ logger = logging.getLogger(__name__)
 _rate_limited_until: datetime | None = None
 
 
-class PendleRateLimitedError(RuntimeError):
+class VeloraRateLimitedError(RuntimeError):
     pass
 
 
 @dataclass(frozen=True)
-class PendleQuote:
+class SwapQuote:
     amount_in_raw: int
     amount_out_raw: int
     min_out_raw: int | None
     token_in: str
     token_out: str
     method: str | None
+    routing: dict[str, Any] | None = None
 
     @property
     def rate_raw(self) -> float:
         return self.amount_out_raw / self.amount_in_raw if self.amount_in_raw else 0.0
 
 
-QuoteCache = dict[tuple[int, str, str, int, float, str, tuple[str, ...]], PendleQuote]
+QuoteCache = dict[tuple[int, str, str, int, float, str, tuple[str, ...]], SwapQuote]
 
 
 @dataclass(frozen=True)
@@ -58,10 +58,10 @@ class ArbitrageSample:
     final_asset: AssetDefinition
     notional_usd: float
     start_amount: float
-    entry_leg: PendleQuote
-    first_leg: PendleQuote
-    second_leg: PendleQuote
-    exit_leg: PendleQuote
+    entry_leg: SwapQuote
+    first_leg: SwapQuote
+    second_leg: SwapQuote
+    exit_leg: SwapQuote
     entry_apxusd_amount: float
     bought_apyusd_amount: float
     sold_apxusd_amount: float
@@ -79,7 +79,11 @@ class ArbitrageSample:
 
     @property
     def entity_id(self) -> str:
-        notional_label = f"{int(self.notional_usd)}" if self.notional_usd.is_integer() else str(self.notional_usd)
+        notional_label = (
+            f"{int(self.notional_usd)}"
+            if self.notional_usd.is_integer()
+            else str(self.notional_usd)
+        )
         return f"{self.monitor.monitor_id}-{self.strategy_id}-{notional_label}"
 
 
@@ -91,12 +95,18 @@ class ArbitrageCollector(BaseCollector):
         self.catalog = catalog
         self._next_monitor_index = 0
         self._latest_samples: dict[str, ArbitrageSample] = {}
+        self._asset_decimals_by_address = {
+            asset.contract_address.lower(): asset.decimals for asset in self.catalog.assets
+        }
 
     async def collect(self) -> list[MetricPoint]:
         global _rate_limited_until
         now = datetime.now(timezone.utc)
         if _rate_limited_until is not None and now < _rate_limited_until:
-            logger.warning("arbitrage collector skipped because Pendle SDK is rate limited until %s", _rate_limited_until.isoformat())
+            logger.warning(
+                "arbitrage collector skipped because Velora Market API is rate limited until %s",
+                _rate_limited_until.isoformat(),
+            )
             return []
 
         asset_map = {asset.asset_id: asset for asset in self.catalog.assets}
@@ -127,8 +137,13 @@ class ArbitrageCollector(BaseCollector):
                 if monitor.funding_asset_id
                 else settlement_apxusd
             )
-            if not all([funding_asset, settlement_apxusd, settlement_apyusd, remote_apxusd, remote_apyusd]):
-                logger.warning("arbitrage monitor skipped because assets are missing: monitor=%s", monitor.monitor_id)
+            if not all(
+                [funding_asset, settlement_apxusd, settlement_apyusd, remote_apxusd, remote_apyusd]
+            ):
+                logger.warning(
+                    "arbitrage monitor skipped because assets are missing: monitor=%s",
+                    monitor.monitor_id,
+                )
                 continue
             monitor_contexts.append(
                 (
@@ -182,10 +197,13 @@ class ArbitrageCollector(BaseCollector):
                             float(notional_usd),
                             quote_cache,
                         )
-                    except PendleRateLimitedError:
-                        _rate_limited_until = datetime.now(timezone.utc) + timedelta(seconds=RATE_LIMIT_COOLDOWN_SECONDS)
+                    except VeloraRateLimitedError:
+                        _rate_limited_until = datetime.now(timezone.utc) + timedelta(
+                            seconds=RATE_LIMIT_COOLDOWN_SECONDS
+                        )
                         logger.warning(
-                            "arbitrage collector entering Pendle SDK rate-limit cooldown until %s",
+                            "arbitrage collector entering Velora Market API rate-limit "
+                            "cooldown until %s",
                             _rate_limited_until.isoformat(),
                         )
                         return self._samples_to_metrics(
@@ -323,7 +341,11 @@ class ArbitrageCollector(BaseCollector):
             final_raw,
         )
         final_amount = exit_leg.amount_out_raw / 10 ** funding_asset.decimals
-        first_bridge_cost_usd = self._bridge_cost_usd(bought_apyusd_amount, settlement_apyusd, monitor)
+        first_bridge_cost_usd = self._bridge_cost_usd(
+            bought_apyusd_amount,
+            settlement_apyusd,
+            monitor,
+        )
         second_bridge_cost_usd = self._bridge_cost_usd(sold_apxusd_amount, remote_apxusd, monitor)
         route_steps = (
             {
@@ -336,6 +358,7 @@ class ArbitrageCollector(BaseCollector):
                 "to_symbol": settlement_apxusd.symbol,
                 "amount_in": start_amount,
                 "amount_out": entry_apxusd_amount,
+                "routing": entry_leg.routing,
             },
             {
                 "type": "swap",
@@ -347,6 +370,7 @@ class ArbitrageCollector(BaseCollector):
                 "to_symbol": settlement_apyusd.symbol,
                 "amount_in": entry_apxusd_amount,
                 "amount_out": bought_apyusd_amount,
+                "routing": first_leg.routing,
             },
             {
                 "type": "bridge",
@@ -371,6 +395,7 @@ class ArbitrageCollector(BaseCollector):
                 "to_symbol": remote_apxusd.symbol,
                 "amount_in": remote_apyusd_amount,
                 "amount_out": sold_apxusd_amount,
+                "routing": second_leg.routing,
             },
             {
                 "type": "bridge",
@@ -395,13 +420,17 @@ class ArbitrageCollector(BaseCollector):
                 "to_symbol": funding_asset.symbol,
                 "amount_in": final_apxusd_amount,
                 "amount_out": final_amount,
+                "routing": exit_leg.routing,
             },
         )
 
         return self._build_sample(
             monitor=monitor,
             strategy_id=BUY_SOURCE_SELL_TARGET,
-            strategy_label=f"{self._display_chain(monitor.source_chain)} 买 apyUSD → {self._display_chain(monitor.target_chain)} 卖 apyUSD",
+            strategy_label=(
+                f"{self._display_chain(monitor.source_chain)} 买 apyUSD → "
+                f"{self._display_chain(monitor.target_chain)} 卖 apyUSD"
+            ),
             settlement_chain=monitor.source_chain,
             remote_chain=monitor.target_chain,
             buy_chain=monitor.source_chain,
@@ -499,7 +528,11 @@ class ArbitrageCollector(BaseCollector):
             second_leg.amount_out_raw,
         )
         final_amount = exit_leg.amount_out_raw / 10 ** funding_asset.decimals
-        first_bridge_cost_usd = self._bridge_cost_usd(entry_apxusd_amount, settlement_apxusd, monitor)
+        first_bridge_cost_usd = self._bridge_cost_usd(
+            entry_apxusd_amount,
+            settlement_apxusd,
+            monitor,
+        )
         second_bridge_cost_usd = self._bridge_cost_usd(bought_apyusd_amount, remote_apyusd, monitor)
         route_steps = (
             {
@@ -512,6 +545,7 @@ class ArbitrageCollector(BaseCollector):
                 "to_symbol": settlement_apxusd.symbol,
                 "amount_in": start_amount,
                 "amount_out": entry_apxusd_amount,
+                "routing": entry_leg.routing,
             },
             {
                 "type": "bridge",
@@ -536,6 +570,7 @@ class ArbitrageCollector(BaseCollector):
                 "to_symbol": remote_apyusd.symbol,
                 "amount_in": remote_start_amount,
                 "amount_out": bought_apyusd_amount,
+                "routing": first_leg.routing,
             },
             {
                 "type": "bridge",
@@ -560,6 +595,7 @@ class ArbitrageCollector(BaseCollector):
                 "to_symbol": settlement_apxusd.symbol,
                 "amount_in": settlement_apyusd_amount,
                 "amount_out": sold_apxusd_amount,
+                "routing": second_leg.routing,
             },
             {
                 "type": "swap",
@@ -571,13 +607,17 @@ class ArbitrageCollector(BaseCollector):
                 "to_symbol": funding_asset.symbol,
                 "amount_in": final_apxusd_amount,
                 "amount_out": final_amount,
+                "routing": exit_leg.routing,
             },
         )
 
         return self._build_sample(
             monitor=monitor,
             strategy_id=BUY_TARGET_SELL_SOURCE,
-            strategy_label=f"{self._display_chain(monitor.target_chain)} 买 apyUSD → {self._display_chain(monitor.source_chain)} 卖 apyUSD",
+            strategy_label=(
+                f"{self._display_chain(monitor.target_chain)} 买 apyUSD → "
+                f"{self._display_chain(monitor.source_chain)} 卖 apyUSD"
+            ),
             settlement_chain=monitor.source_chain,
             remote_chain=monitor.target_chain,
             buy_chain=monitor.target_chain,
@@ -615,10 +655,10 @@ class ArbitrageCollector(BaseCollector):
         final_asset: AssetDefinition,
         notional_usd: float,
         start_amount: float,
-        entry_leg: PendleQuote,
-        first_leg: PendleQuote,
-        second_leg: PendleQuote,
-        exit_leg: PendleQuote,
+        entry_leg: SwapQuote,
+        first_leg: SwapQuote,
+        second_leg: SwapQuote,
+        exit_leg: SwapQuote,
         entry_apxusd_amount: float,
         bought_apyusd_amount: float,
         sold_apxusd_amount: float,
@@ -675,41 +715,44 @@ class ArbitrageCollector(BaseCollector):
         token_in: str,
         token_out: str,
         amount_in_raw: int,
-    ) -> PendleQuote:
+    ) -> SwapQuote:
         params = {
-            "receiver": monitor.receiver_address,
-            "slippage": monitor.slippage_bps / 10000,
-            "tokensIn": token_in,
-            "tokensOut": token_out,
-            "amountsIn": str(amount_in_raw),
-            "enableAggregator": "true",
-            "aggregators": ",".join(monitor.aggregators),
+            "srcToken": token_in,
+            "destToken": token_out,
+            "amount": str(amount_in_raw),
+            "side": "SELL",
+            "network": chain_id,
+            "version": "6.2",
         }
+        src_decimals = self._token_decimals(token_in)
+        dest_decimals = self._token_decimals(token_out)
+        if src_decimals is not None:
+            params["srcDecimals"] = src_decimals
+        if dest_decimals is not None:
+            params["destDecimals"] = dest_decimals
+
         await asyncio.sleep(QUOTE_THROTTLE_SECONDS)
-        response = await client.get(f"{PENDLE_SDK_BASE_URL}/{chain_id}/convert", params=params)
+        response = await client.get(f"{VELORA_MARKET_API_BASE_URL}/prices", params=params)
         if response.status_code == 429:
             retry_after = self._retry_after_seconds(response) or RATE_LIMIT_COOLDOWN_SECONDS
-            raise PendleRateLimitedError(f"Pendle SDK rate limited; retry after {retry_after:.0f}s")
+            raise VeloraRateLimitedError(
+                f"Velora Market API rate limited; retry after {retry_after:.0f}s"
+            )
         response.raise_for_status()
         payload = response.json()
-        routes = payload.get("routes") or []
-        if not routes:
-            raise ValueError("Pendle route not found")
-        route = routes[0]
-        outputs = route.get("outputs") or []
-        if not outputs:
-            raise ValueError("Pendle route output not found")
+        price_route = payload.get("priceRoute") or payload
+        dest_amount = price_route.get("destAmount")
+        if dest_amount is None:
+            raise ValueError("Velora market route output not found")
 
-        output = outputs[0]
-        min_out_raw = self._extract_min_out(route)
-        contract_param_info = route.get("contractParamInfo") or {}
-        return PendleQuote(
+        return SwapQuote(
             amount_in_raw=amount_in_raw,
-            amount_out_raw=int(output["amount"]),
-            min_out_raw=min_out_raw,
+            amount_out_raw=int(dest_amount),
+            min_out_raw=None,
             token_in=token_in.lower(),
-            token_out=str(output.get("token") or token_out).lower(),
-            method=contract_param_info.get("method"),
+            token_out=token_out.lower(),
+            method=f"velora_market_{price_route.get('version') or '6.2'}",
+            routing=self._extract_velora_routing(price_route),
         )
 
     async def _quote_conversion(
@@ -720,9 +763,9 @@ class ArbitrageCollector(BaseCollector):
         token_in: str,
         token_out: str,
         amount_in_raw: int,
-    ) -> PendleQuote:
+    ) -> SwapQuote:
         if token_in.lower() == token_out.lower():
-            return PendleQuote(
+            return SwapQuote(
                 amount_in_raw=amount_in_raw,
                 amount_out_raw=amount_in_raw,
                 min_out_raw=amount_in_raw,
@@ -743,7 +786,7 @@ class ArbitrageCollector(BaseCollector):
         quote_cache: QuoteCache | None,
         *,
         allow_reverse_fallback: bool = False,
-    ) -> PendleQuote:
+    ) -> SwapQuote:
         key = (
             chain_id,
             token_in.lower(),
@@ -751,14 +794,24 @@ class ArbitrageCollector(BaseCollector):
             amount_in_raw,
             monitor.slippage_bps,
             monitor.receiver_address.lower(),
-            tuple(monitor.aggregators),
+            "velora_market",
         )
         if quote_cache is not None and key in quote_cache:
             return quote_cache[key]
         try:
-            quote = await self._quote_conversion(client, chain_id, monitor, token_in, token_out, amount_in_raw)
+            quote = await self._quote_conversion(
+                client,
+                chain_id,
+                monitor,
+                token_in,
+                token_out,
+                amount_in_raw,
+            )
         except httpx.HTTPStatusError as exc:
-            if not allow_reverse_fallback or exc.response.status_code not in {500, 501, 502, 503, 504}:
+            if (
+                not allow_reverse_fallback
+                or exc.response.status_code not in {500, 501, 502, 503, 504}
+            ):
                 raise
             quote = await self._quote_from_reverse_conversion(
                 client,
@@ -784,7 +837,7 @@ class ArbitrageCollector(BaseCollector):
         amount_in_raw: int,
         quote_cache: QuoteCache | None,
         failed_status_code: int,
-    ) -> PendleQuote:
+    ) -> SwapQuote:
         reverse_quote = await self._quote_cached(
             client,
             chain_id,
@@ -795,40 +848,51 @@ class ArbitrageCollector(BaseCollector):
             quote_cache,
         )
         if reverse_quote.amount_out_raw <= 0:
-            raise ValueError("Pendle reverse route output is zero")
+            raise ValueError("Velora reverse route output is zero")
 
         amount_out_raw = amount_in_raw * reverse_quote.amount_in_raw // reverse_quote.amount_out_raw
         logger.warning(
-            "Pendle quote %s -> %s on chain %s returned %s; using reverse quote fallback",
+            "Velora quote %s -> %s on chain %s returned %s; using reverse quote fallback",
             token_in,
             token_out,
             chain_id,
             failed_status_code,
         )
-        return PendleQuote(
+        return SwapQuote(
             amount_in_raw=amount_in_raw,
             amount_out_raw=amount_out_raw,
             min_out_raw=None,
             token_in=token_in.lower(),
             token_out=token_out.lower(),
             method=f"derived_reverse_http_{failed_status_code}",
+            routing={
+                "provider": "derived_reverse",
+                "failed_status_code": failed_status_code,
+                "source": "reverse_quote",
+                "reverse_routing": reverse_quote.routing,
+            },
         )
 
     @staticmethod
     def _reverse_entry_quote(
-        entry_leg: PendleQuote,
+        entry_leg: SwapQuote,
         token_in: str,
         token_out: str,
         amount_in_raw: int,
-    ) -> PendleQuote:
+    ) -> SwapQuote:
         amount_out_raw = amount_in_raw * entry_leg.amount_in_raw // entry_leg.amount_out_raw
-        return PendleQuote(
+        return SwapQuote(
             amount_in_raw=amount_in_raw,
             amount_out_raw=amount_out_raw,
             min_out_raw=None,
             token_in=token_in.lower(),
             token_out=token_out.lower(),
             method="derived_reverse_entry",
+            routing={
+                "provider": "derived_reverse_entry",
+                "source": "entry_leg",
+                "entry_routing": entry_leg.routing,
+            },
         )
 
     @staticmethod
@@ -841,13 +905,56 @@ class ArbitrageCollector(BaseCollector):
         except ValueError:
             return None
 
+    def _token_decimals(self, token_address: str) -> int | None:
+        return self._asset_decimals_by_address.get(token_address.lower())
+
     @staticmethod
-    def _extract_min_out(route: dict[str, Any]) -> int | None:
-        params = (route.get("contractParamInfo") or {}).get("contractCallParams") or []
-        if len(params) < 2 or not isinstance(params[1], list) or not params[1]:
-            return None
-        min_out = params[1][0].get("minOut")
-        return int(min_out) if min_out is not None else None
+    def _extract_velora_routing(price_route: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "provider": "velora",
+            "mode": "market",
+            "version": price_route.get("version"),
+            "network": price_route.get("network"),
+            "block_number": price_route.get("blockNumber"),
+            "side": price_route.get("side"),
+            "contract_method": price_route.get("contractMethod"),
+            "contract_address": price_route.get("contractAddress"),
+            "token_transfer_proxy": price_route.get("tokenTransferProxy"),
+            "gas_cost": price_route.get("gasCost"),
+            "gas_cost_usd": price_route.get("gasCostUSD"),
+            "src_usd": price_route.get("srcUSD"),
+            "dest_usd": price_route.get("destUSD"),
+            "dest_amount_after_fee": price_route.get("destAmountAfterFee"),
+            "partner_fee": price_route.get("partnerFee"),
+            "max_impact_reached": price_route.get("maxImpactReached"),
+            "best_route": [
+                {
+                    "percent": route.get("percent"),
+                    "swaps": [
+                        {
+                            "src_token": swap.get("srcToken"),
+                            "src_decimals": swap.get("srcDecimals"),
+                            "dest_token": swap.get("destToken"),
+                            "dest_decimals": swap.get("destDecimals"),
+                            "swap_exchanges": [
+                                {
+                                    "exchange": exchange.get("exchange"),
+                                    "src_amount": exchange.get("srcAmount"),
+                                    "dest_amount": exchange.get("destAmount"),
+                                    "percent": exchange.get("percent"),
+                                    "pool_addresses": exchange.get("poolAddresses") or [],
+                                    "pool_identifiers": exchange.get("poolIdentifiers") or [],
+                                    "data": exchange.get("data") or {},
+                                }
+                                for exchange in swap.get("swapExchanges") or []
+                            ],
+                        }
+                        for swap in route.get("swaps") or []
+                    ],
+                }
+                for route in price_route.get("bestRoute") or []
+            ],
+        }
 
     @staticmethod
     def _matching_asset(
@@ -875,8 +982,15 @@ class ArbitrageCollector(BaseCollector):
         return amount_raw // 10 ** (source_decimals - target_decimals)
 
     @staticmethod
-    def _bridge_cost_usd(amount: float, asset: AssetDefinition, monitor: ArbitrageMonitorDefinition) -> float:
-        return amount * asset.price_hint_usd * monitor.bridge_fee_bps / 10000 + monitor.bridge_fixed_usd
+    def _bridge_cost_usd(
+        amount: float,
+        asset: AssetDefinition,
+        monitor: ArbitrageMonitorDefinition,
+    ) -> float:
+        return (
+            amount * asset.price_hint_usd * monitor.bridge_fee_bps / 10000
+            + monitor.bridge_fixed_usd
+        )
 
     @staticmethod
     def _display_chain(chain: str) -> str:
@@ -892,7 +1006,9 @@ class ArbitrageCollector(BaseCollector):
         metrics: list[MetricPoint] = []
         candidates = best_candidates if best_candidates is not None else samples
         best_sample = max(candidates, key=lambda sample: sample.net_profit_usd, default=None)
-        best_metric_recorded_at = best_recorded_at or (best_sample.recorded_at if best_sample is not None else None)
+        best_metric_recorded_at = best_recorded_at or (
+            best_sample.recorded_at if best_sample is not None else None
+        )
 
         for sample in samples:
             details = self._sample_details(sample)
@@ -919,7 +1035,7 @@ class ArbitrageCollector(BaseCollector):
                         metric_name=metric_name,
                         value=float(value),
                         unit=unit,
-                        source="pendle_sdk",
+                        source="velora_market",
                         recorded_at=sample.recorded_at,
                         details=details,
                     )
@@ -940,7 +1056,7 @@ class ArbitrageCollector(BaseCollector):
                         metric_name=metric_name,
                         value=float(value),
                         unit=unit,
-                        source="pendle_sdk",
+                        source="velora_market",
                         recorded_at=best_metric_recorded_at or best_sample.recorded_at,
                         details=best_details,
                     )
@@ -949,6 +1065,9 @@ class ArbitrageCollector(BaseCollector):
 
     @staticmethod
     def _sample_details(sample: ArbitrageSample) -> dict[str, Any]:
+        def min_out(value: int | None) -> str | None:
+            return str(value) if value is not None else None
+
         return {
             "monitor_id": sample.monitor.monitor_id,
             "label": sample.monitor.label,
@@ -984,35 +1103,39 @@ class ArbitrageCollector(BaseCollector):
                 "token_out": sample.entry_leg.token_out,
                 "amount_in_raw": str(sample.entry_leg.amount_in_raw),
                 "amount_out_raw": str(sample.entry_leg.amount_out_raw),
-                "min_out_raw": str(sample.entry_leg.min_out_raw) if sample.entry_leg.min_out_raw else None,
+                "min_out_raw": min_out(sample.entry_leg.min_out_raw),
                 "rate_raw": sample.entry_leg.rate_raw,
                 "method": sample.entry_leg.method,
+                "routing": sample.entry_leg.routing,
             },
             "first_leg": {
                 "token_in": sample.first_leg.token_in,
                 "token_out": sample.first_leg.token_out,
                 "amount_in_raw": str(sample.first_leg.amount_in_raw),
                 "amount_out_raw": str(sample.first_leg.amount_out_raw),
-                "min_out_raw": str(sample.first_leg.min_out_raw) if sample.first_leg.min_out_raw else None,
+                "min_out_raw": min_out(sample.first_leg.min_out_raw),
                 "rate_raw": sample.first_leg.rate_raw,
                 "method": sample.first_leg.method,
+                "routing": sample.first_leg.routing,
             },
             "second_leg": {
                 "token_in": sample.second_leg.token_in,
                 "token_out": sample.second_leg.token_out,
                 "amount_in_raw": str(sample.second_leg.amount_in_raw),
                 "amount_out_raw": str(sample.second_leg.amount_out_raw),
-                "min_out_raw": str(sample.second_leg.min_out_raw) if sample.second_leg.min_out_raw else None,
+                "min_out_raw": min_out(sample.second_leg.min_out_raw),
                 "rate_raw": sample.second_leg.rate_raw,
                 "method": sample.second_leg.method,
+                "routing": sample.second_leg.routing,
             },
             "exit_leg": {
                 "token_in": sample.exit_leg.token_in,
                 "token_out": sample.exit_leg.token_out,
                 "amount_in_raw": str(sample.exit_leg.amount_in_raw),
                 "amount_out_raw": str(sample.exit_leg.amount_out_raw),
-                "min_out_raw": str(sample.exit_leg.min_out_raw) if sample.exit_leg.min_out_raw else None,
+                "min_out_raw": min_out(sample.exit_leg.min_out_raw),
                 "rate_raw": sample.exit_leg.rate_raw,
                 "method": sample.exit_leg.method,
+                "routing": sample.exit_leg.routing,
             },
         }

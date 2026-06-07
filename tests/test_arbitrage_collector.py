@@ -8,7 +8,7 @@ from apyx_monitor.collectors.arbitrage import (
     BUY_SOURCE_SELL_TARGET,
     BUY_TARGET_SELL_SOURCE,
     ArbitrageCollector,
-    PendleQuote,
+    SwapQuote,
 )
 from apyx_monitor.config import (
     ArbitrageMonitorDefinition,
@@ -55,7 +55,7 @@ class MockArbitrageCollector(ArbitrageCollector):
         token_in: str,
         token_out: str,
         amount_in_raw: int,
-    ) -> PendleQuote:
+    ) -> SwapQuote:
         amounts = {
             ("usdc", "eth-apx"): amount_in_raw * 10**12,
             ("eth-apx", "eth-apy"): amount_in_raw * 2,
@@ -68,7 +68,7 @@ class MockArbitrageCollector(ArbitrageCollector):
         }
         self.quote_calls.append((chain_id, token_in, token_out, amount_in_raw))
         amount_out_raw = amounts[(token_in, token_out)]
-        return PendleQuote(
+        return SwapQuote(
             amount_in_raw=amount_in_raw,
             amount_out_raw=amount_out_raw,
             min_out_raw=None,
@@ -87,7 +87,7 @@ class FailingRemoteBuyCollector(MockArbitrageCollector):
         token_in: str,
         token_out: str,
         amount_in_raw: int,
-    ) -> PendleQuote:
+    ) -> SwapQuote:
         if token_in == "base-apx" and token_out == "base-apy":
             request = httpx.Request("GET", "https://example.test/convert")
             response = httpx.Response(501, request=request, json={"message": "not implemented"})
@@ -104,11 +104,13 @@ class FailingSettlementSellCollector(MockArbitrageCollector):
         token_in: str,
         token_out: str,
         amount_in_raw: int,
-    ) -> PendleQuote:
+    ) -> SwapQuote:
         if token_in == "eth-apy" and token_out == "eth-apx":
             request = httpx.Request("GET", "https://example.test/convert")
             response = httpx.Response(500, request=request, json={"message": "server error"})
-            raise httpx.HTTPStatusError("500 Internal Server Error", request=request, response=response)
+            raise httpx.HTTPStatusError(
+                "500 Internal Server Error", request=request, response=response
+            )
         return await super()._quote(client, chain_id, monitor, token_in, token_out, amount_in_raw)
 
 
@@ -132,7 +134,13 @@ def test_settlement_sell_uses_reverse_quote_fallback_when_pendle_returns_500():
     asyncio.run(_run_settlement_sell_fallback_test())
 
 
-async def _run_arbitrage_profit_test(strategy_id: str, final_usdc: float, profit: float, edge_pct: float):
+def test_quote_uses_velora_market_api(monkeypatch):
+    asyncio.run(_run_quote_uses_velora_market_api_test(monkeypatch))
+
+
+async def _run_arbitrage_profit_test(
+    strategy_id: str, final_usdc: float, profit: float, edge_pct: float
+):
     monitor = ArbitrageMonitorDefinition(
         monitor_id="arb-ethereum-base",
         label="Ethereum <-> Base",
@@ -146,8 +154,12 @@ async def _run_arbitrage_profit_test(strategy_id: str, final_usdc: float, profit
     )
     catalog = AssetCatalog(
         chains=[
-            ChainDefinition(chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url=""),
-            ChainDefinition(chain="base", chain_id=8453, rpc_url_env="BASE_RPC", default_rpc_url=""),
+            ChainDefinition(
+                chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url=""
+            ),
+            ChainDefinition(
+                chain="base", chain_id=8453, rpc_url_env="BASE_RPC", default_rpc_url=""
+            ),
         ],
         assets=[
             _asset("usdc-ethereum", "usdc", "USDC", "ethereum", "usdc", 6, enabled=False),
@@ -215,8 +227,12 @@ async def _run_collect_quote_count_test():
     )
     catalog = AssetCatalog(
         chains=[
-            ChainDefinition(chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url=""),
-            ChainDefinition(chain="base", chain_id=8453, rpc_url_env="BASE_RPC", default_rpc_url=""),
+            ChainDefinition(
+                chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url=""
+            ),
+            ChainDefinition(
+                chain="base", chain_id=8453, rpc_url_env="BASE_RPC", default_rpc_url=""
+            ),
             ChainDefinition(chain="bsc", chain_id=56, rpc_url_env="BSC_RPC", default_rpc_url=""),
         ],
         assets=[
@@ -238,27 +254,69 @@ async def _run_collect_quote_count_test():
 
     assert first_metrics
     assert len(collector.quote_calls) == 5
-    assert len([call for call in collector.quote_calls if call[1:] == ("usdc", "eth-apx", 10_000_000_000)]) == 1
-    assert len([call for call in collector.quote_calls if call[1] == "eth-apx" and call[2] == "eth-apy"]) == 1
-    assert len([call for call in collector.quote_calls if call[1] == "eth-apy" and call[2] == "eth-apx"]) == 1
+    assert (
+        len(
+            [
+                call
+                for call in collector.quote_calls
+                if call[1:] == ("usdc", "eth-apx", 10_000_000_000)
+            ]
+        )
+        == 1
+    )
+    assert (
+        len(
+            [
+                call
+                for call in collector.quote_calls
+                if call[1] == "eth-apx" and call[2] == "eth-apy"
+            ]
+        )
+        == 1
+    )
+    assert (
+        len(
+            [
+                call
+                for call in collector.quote_calls
+                if call[1] == "eth-apy" and call[2] == "eth-apx"
+            ]
+        )
+        == 1
+    )
     assert [call for call in collector.quote_calls if call[1].startswith("base-")]
     assert not [call for call in collector.quote_calls if call[1].startswith("bsc-")]
-    assert not [call for call in collector.quote_calls if call[1] == "eth-apx" and call[2] == "usdc"]
+    assert not [
+        call for call in collector.quote_calls if call[1] == "eth-apx" and call[2] == "usdc"
+    ]
 
     first_best = _best_profit_metric(first_metrics)
-    assert first_best.details["sample_entity_id"] == "arb-ethereum-base-buy-source-sell-target-10000"
+    assert (
+        first_best.details["sample_entity_id"] == "arb-ethereum-base-buy-source-sell-target-10000"
+    )
 
     second_metrics = await collector.collect()
 
     assert second_metrics
     assert len(collector.quote_calls) == 10
     second_collect_calls = collector.quote_calls[5:]
-    assert len([call for call in second_collect_calls if call[1:] == ("usdc", "eth-apx", 10_000_000_000)]) == 1
+    assert (
+        len(
+            [
+                call
+                for call in second_collect_calls
+                if call[1:] == ("usdc", "eth-apx", 10_000_000_000)
+            ]
+        )
+        == 1
+    )
     assert [call for call in second_collect_calls if call[1].startswith("bsc-")]
     assert not [call for call in second_collect_calls if call[1].startswith("base-")]
 
     second_best = _best_profit_metric(second_metrics)
-    assert second_best.details["sample_entity_id"] == "arb-ethereum-bsc-buy-source-sell-target-10000"
+    assert (
+        second_best.details["sample_entity_id"] == "arb-ethereum-bsc-buy-source-sell-target-10000"
+    )
 
 
 async def _run_remote_buy_fallback_test():
@@ -275,8 +333,12 @@ async def _run_remote_buy_fallback_test():
     )
     catalog = AssetCatalog(
         chains=[
-            ChainDefinition(chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url=""),
-            ChainDefinition(chain="base", chain_id=8453, rpc_url_env="BASE_RPC", default_rpc_url=""),
+            ChainDefinition(
+                chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url=""
+            ),
+            ChainDefinition(
+                chain="base", chain_id=8453, rpc_url_env="BASE_RPC", default_rpc_url=""
+            ),
         ],
         assets=[
             _asset("usdc-ethereum", "usdc", "USDC", "ethereum", "usdc", 6, enabled=False),
@@ -326,8 +388,12 @@ async def _run_settlement_sell_fallback_test():
     )
     catalog = AssetCatalog(
         chains=[
-            ChainDefinition(chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url=""),
-            ChainDefinition(chain="base", chain_id=8453, rpc_url_env="BASE_RPC", default_rpc_url=""),
+            ChainDefinition(
+                chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url=""
+            ),
+            ChainDefinition(
+                chain="base", chain_id=8453, rpc_url_env="BASE_RPC", default_rpc_url=""
+            ),
         ],
         assets=[
             _asset("usdc-ethereum", "usdc", "USDC", "ethereum", "usdc", 6, enabled=False),
@@ -362,9 +428,114 @@ async def _run_settlement_sell_fallback_test():
     assert any(call[1] == "eth-apx" and call[2] == "eth-apy" for call in collector.quote_calls)
 
 
+async def _run_quote_uses_velora_market_api_test(monkeypatch):
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("apyx_monitor.collectors.arbitrage.asyncio.sleep", fake_sleep)
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.url: str | None = None
+            self.params: dict | None = None
+
+        async def get(self, url: str, params: dict) -> httpx.Response:
+            self.url = url
+            self.params = params
+            request = httpx.Request("GET", url)
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "priceRoute": {
+                        "blockNumber": 123,
+                        "network": 1,
+                        "destAmount": "2000000000000000000",
+                        "version": "6.2",
+                        "side": "SELL",
+                        "contractMethod": "swapExactAmountInOnCurveV1",
+                        "gasCostUSD": "0.01",
+                        "srcUSD": "1.00",
+                        "destUSD": "2.00",
+                        "bestRoute": [
+                            {
+                                "percent": 100,
+                                "swaps": [
+                                    {
+                                        "srcToken": "eth-apx",
+                                        "destToken": "eth-apy",
+                                        "swapExchanges": [
+                                            {
+                                                "exchange": "CurveV1StableNg",
+                                                "srcAmount": "1000000000000000000",
+                                                "destAmount": "2000000000000000000",
+                                                "percent": 100,
+                                                "poolAddresses": ["0xpool"],
+                                                "poolIdentifiers": ["curve-pool"],
+                                                "data": {"gasUSD": "0.01"},
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                },
+            )
+
+    monitor = ArbitrageMonitorDefinition(
+        monitor_id="arb-ethereum-base",
+        label="Ethereum <-> Base",
+        source_chain="ethereum",
+        target_chain="base",
+        funding_asset_id="usdc-ethereum",
+        start_asset_id="apxusd-ethereum",
+        intermediate_asset_id="apyusd-ethereum",
+        final_asset_id="apxusd-base",
+    )
+    catalog = AssetCatalog(
+        chains=[
+            ChainDefinition(chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url="")
+        ],
+        assets=[
+            _asset("apxusd-ethereum", "apxusd", "apxUSD", "ethereum", "eth-apx"),
+            _asset("apyusd-ethereum", "apyusd", "apyUSD", "ethereum", "eth-apy"),
+        ],
+        pendle_markets=[],
+        morpho_markets=[],
+        arbitrage_monitors=[monitor],
+    )
+    collector = ArbitrageCollector(Settings(), catalog)
+    client = FakeClient()
+
+    quote = await collector._quote(client, 1, monitor, "eth-apx", "eth-apy", 10**18)
+
+    assert client.url == "https://api.paraswap.io/prices"
+    assert client.params["version"] == "6.2"
+    assert client.params["network"] == 1
+    assert client.params["side"] == "SELL"
+    assert client.params["srcToken"] == "eth-apx"
+    assert client.params["destToken"] == "eth-apy"
+    assert client.params["srcDecimals"] == 18
+    assert client.params["destDecimals"] == 18
+    assert "enableAggregator" not in client.params
+    assert quote.amount_out_raw == 2 * 10**18
+    assert quote.method == "velora_market_6.2"
+    assert quote.routing["provider"] == "velora"
+    assert quote.routing["mode"] == "market"
+    assert quote.routing["contract_method"] == "swapExactAmountInOnCurveV1"
+    exchange = quote.routing["best_route"][0]["swaps"][0]["swap_exchanges"][0]
+    assert exchange["exchange"] == "CurveV1StableNg"
+    assert exchange["pool_addresses"] == ["0xpool"]
+    assert sleep_calls
+
+
 def _best_profit_metric(metrics):
     return next(
         metric
         for metric in metrics
-        if metric.entity_id == "arb-apyusd-apxusd-crosschain" and metric.metric_name == "best_net_profit_usd"
+        if metric.entity_id == "arb-apyusd-apxusd-crosschain"
+        and metric.metric_name == "best_net_profit_usd"
     )

@@ -781,10 +781,109 @@ def _format_route_amount(value: object) -> str:
     return f"{float(value):,.4f}"
 
 
+def _short_address(value: object) -> str:
+    if not isinstance(value, str) or len(value) < 12:
+        return str(value or "-")
+    return f"{value[:6]}...{value[-4:]}"
+
+
+def _render_route_routing_summary(step: dict) -> str:
+    routing = step.get("routing")
+    if not isinstance(routing, dict):
+        return ""
+
+    provider = routing.get("provider")
+    if provider == "derived_reverse_entry":
+        return '<span class="arb-route-meta">derived from entry leg</span>'
+    if provider == "derived_reverse":
+        return '<span class="arb-route-meta">derived from reverse quote</span>'
+
+    best_route = routing.get("best_route")
+    if not isinstance(best_route, list) or not best_route:
+        method = routing.get("contract_method") or provider
+        return f'<span class="arb-route-meta">{escape(str(method))}</span>' if method else ""
+
+    exchanges: list[str] = []
+    pools: list[str] = []
+    for route in best_route:
+        if not isinstance(route, dict):
+            continue
+        for swap in route.get("swaps") or []:
+            if not isinstance(swap, dict):
+                continue
+            for exchange in swap.get("swap_exchanges") or []:
+                if not isinstance(exchange, dict):
+                    continue
+                exchange_name = exchange.get("exchange")
+                if exchange_name and str(exchange_name) not in exchanges:
+                    exchanges.append(str(exchange_name))
+                for pool in exchange.get("pool_addresses") or []:
+                    pool_label = _short_address(pool)
+                    if pool_label not in pools:
+                        pools.append(pool_label)
+
+    parts = []
+    if exchanges:
+        parts.append(" / ".join(exchanges[:2]))
+    if pools:
+        parts.append("pool " + ", ".join(pools[:2]))
+    method = routing.get("contract_method")
+    if method:
+        parts.append(str(method))
+    gas_usd = routing.get("gas_cost_usd")
+    if gas_usd:
+        parts.append(f"gas ${gas_usd}")
+    return f'<span class="arb-route-meta">{escape(" | ".join(parts))}</span>'
+
+
+def _render_arbitrage_route_cards(steps: list) -> str:
+    cards = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        from_label = step.get("from_symbol") or step.get("from_asset", "-")
+        to_label = step.get("to_symbol") or step.get("to_asset", "-")
+        if step.get("type") == "swap":
+            title = f'{step.get("chain", "-")} swap'
+            body = (
+                f'{from_label} {_format_route_amount(step.get("amount_in"))} '
+                f'-> {to_label} {_format_route_amount(step.get("amount_out"))}'
+            )
+            meta = _render_route_routing_summary(step)
+        elif step.get("type") == "bridge":
+            title = f'bridge {step.get("from_chain", "-")} -> {step.get("to_chain", "-")}'
+            body = (
+                f'{from_label} {_format_route_amount(step.get("amount_in"))} '
+                f'-> {to_label} {_format_route_amount(step.get("amount_out"))}'
+            )
+            cost = step.get("cost_usd")
+            meta = (
+                f'<span class="arb-route-meta">cost {escape(_format_value("total_cost_usd", cost))}</span>'
+                if isinstance(cost, (int, float))
+                else ""
+            )
+        else:
+            continue
+        cards.append(
+            f'''
+            <div class="arb-route-step {escape(str(step.get("type", "")))}">
+              <div class="arb-route-dot"></div>
+              <div class="arb-route-copy">
+                <div class="arb-route-title">{escape(title)}</div>
+                <div class="arb-route-body">{escape(body)}</div>
+                {meta}
+              </div>
+            </div>
+            '''
+        )
+    return '<div class="arb-route-flow">' + "".join(cards) + "</div>" if cards else "-"
+
+
 def _render_arbitrage_route(details: dict) -> str:
     steps = details.get("route_steps")
     if not isinstance(steps, list) or not steps:
         return "-"
+    return _render_arbitrage_route_cards(steps)
     labels = []
     for step in steps:
         if not isinstance(step, dict):
@@ -997,8 +1096,8 @@ def _render_dashboard_data(
     <div class="cards">{_render_cards(session, latest_map)}</div>
 
     <div class="grid">
-            {_render_threshold_controls(rule_map, latest_map, hours, threshold_updated)}
             {_render_arbitrage_section(latest_map)}
+            {_render_threshold_controls(rule_map, latest_map, hours, threshold_updated)}
             {_render_charts(session, hours)}
             {_render_morpho_market_sections(session, latest_map, hours)}
             <div class="panel full">
@@ -1187,10 +1286,20 @@ def dashboard(
     .arb-summary div {{ padding: 12px; border-radius: 12px; background: rgba(15,23,42,0.55); border: 1px solid rgba(148,163,184,0.12); }}
     .arb-summary span {{ display: block; color: var(--muted); font-size: 12px; margin-bottom: 5px; }}
     .arb-summary strong {{ font-size: 20px; }}
-    .arbitrage-panel .route-path {{ display: inline; color: #cbd5e1; line-height: 1.55; }}
-    .arbitrage-panel .route-separator {{ color: var(--muted); padding: 0 6px; }}
-    .arbitrage-panel tr.positive td:nth-child(4), .arbitrage-panel tr.positive td:nth-child(5) {{ color: #86efac; }}
-    .arbitrage-panel tr.negative td:nth-child(4), .arbitrage-panel tr.negative td:nth-child(5) {{ color: #fecaca; }}
+    .arbitrage-panel table {{ min-width: 1320px; }}
+    .arbitrage-panel th:nth-child(4), .arbitrage-panel td:nth-child(4) {{ width: 430px; }}
+    .arb-route-flow {{ display: flex; flex-direction: column; gap: 7px; min-width: 360px; max-width: 520px; }}
+    .arb-route-step {{ position: relative; display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; padding: 8px 10px; border-radius: 10px; background: rgba(15,23,42,0.45); border: 1px solid rgba(148,163,184,0.12); }}
+    .arb-route-step::before {{ content: ""; position: absolute; left: 16px; top: -8px; width: 1px; height: 8px; background: rgba(148,163,184,0.2); }}
+    .arb-route-step:first-child::before {{ display: none; }}
+    .arb-route-dot {{ width: 9px; height: 9px; margin-top: 5px; border-radius: 999px; background: #38bdf8; box-shadow: 0 0 0 3px rgba(56,189,248,0.14); }}
+    .arb-route-step.bridge .arb-route-dot {{ background: #fbbf24; box-shadow: 0 0 0 3px rgba(251,191,36,0.14); }}
+    .arb-route-copy {{ min-width: 0; }}
+    .arb-route-title {{ color: #e2e8f0; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; margin-bottom: 3px; }}
+    .arb-route-body {{ color: #cbd5e1; font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }}
+    .arb-route-meta {{ display: block; color: #94a3b8; font-size: 11px; line-height: 1.35; margin-top: 3px; overflow-wrap: anywhere; }}
+    .arbitrage-panel tr.positive td:nth-child(5), .arbitrage-panel tr.positive td:nth-child(6) {{ color: #86efac; }}
+    .arbitrage-panel tr.negative td:nth-child(5), .arbitrage-panel tr.negative td:nth-child(6) {{ color: #fecaca; }}
     .chart-panel {{ overflow: hidden; }}
     .morpho-section {{ display: flex; flex-direction: column; gap: 16px; }}
     .morpho-market-row {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: stretch; }}
