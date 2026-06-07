@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
+from typing import Any
 
 import httpx
 
 from ..config import AssetCatalog, Settings
 from .base import BaseCollector, MetricPoint
-
 
 MORPHO_MARKET_QUERY = """
 query MarketState($marketId: String!, $chainId: Int!) {
@@ -43,6 +44,8 @@ query MarketState($marketId: String!, $chainId: Int!) {
 }
 """
 
+logger = logging.getLogger(__name__)
+
 
 class MorphoCollector(BaseCollector):
     name = "morpho"
@@ -73,88 +76,140 @@ class MorphoCollector(BaseCollector):
                 payload = response.json()
                 if payload.get("errors"):
                     raise RuntimeError(f"Morpho query failed: {payload['errors']}")
-                market_data = payload["data"]["marketById"]
-                state = market_data["state"]
-                loan_decimals = int(market_data["loanAsset"]["decimals"])
-                liquidity_assets = float(state["liquidityAssets"]) / 10 ** loan_decimals
+                market_data = payload.get("data", {}).get("marketById")
+                if not market_data:
+                    logger.warning("Morpho market not found: market_id=%s", market.market_id)
+                    continue
+                state = market_data.get("state") or {}
+                loan_asset = market_data.get("loanAsset") or {}
+                loan_decimals = self._to_float(loan_asset.get("decimals"))
+                if loan_decimals is None:
+                    logger.warning(
+                        "Morpho market skipped because loan asset decimals are missing: "
+                        "market_id=%s",
+                        market.market_id,
+                    )
+                    continue
                 recorded_at = datetime.now(timezone.utc)
                 details = {
                     "label": market.label,
                     "morpho_market_id": market.morpho_market_id,
                 }
 
-                metrics.extend(
-                    [
-                        MetricPoint(
-                            entity_id=market.market_id,
-                            entity_type="morpho_market",
-                            metric_name="available_to_borrow_assets",
-                            value=liquidity_assets,
-                            unit="assets",
-                            source="morpho_api",
-                            recorded_at=recorded_at,
-                            details=details,
-                        ),
-                        MetricPoint(
-                            entity_id=market.market_id,
-                            entity_type="morpho_market",
-                            metric_name="available_to_borrow_usd",
-                            value=float(state["liquidityAssetsUsd"]),
-                            unit="usd",
-                            source="morpho_api",
-                            recorded_at=recorded_at,
-                            details=details,
-                        ),
-                        MetricPoint(
-                            entity_id=market.market_id,
-                            entity_type="morpho_market",
-                            metric_name="borrow_apy",
-                            value=float(state["borrowApy"]) * 100,
-                            unit="pct",
-                            source="morpho_api",
-                            recorded_at=recorded_at,
-                            details=details,
-                        ),
-                        MetricPoint(
-                            entity_id=market.market_id,
-                            entity_type="morpho_market",
-                            metric_name="supply_apy",
-                            value=float(state["supplyApy"]) * 100,
-                            unit="pct",
-                            source="morpho_api",
-                            recorded_at=recorded_at,
-                            details=details,
-                        ),
-                        MetricPoint(
-                            entity_id=market.market_id,
-                            entity_type="morpho_market",
-                            metric_name="supply_assets_usd",
-                            value=float(state["supplyAssetsUsd"]),
-                            unit="usd",
-                            source="morpho_api",
-                            recorded_at=recorded_at,
-                            details=details,
-                        ),
-                        MetricPoint(
-                            entity_id=market.market_id,
-                            entity_type="morpho_market",
-                            metric_name="borrow_assets_usd",
-                            value=float(state["borrowAssetsUsd"]),
-                            unit="usd",
-                            source="morpho_api",
-                            recorded_at=recorded_at,
-                            details=details,
-                        ),
-                        MetricPoint(
-                            entity_id=market.market_id,
-                            entity_type="morpho_market",
-                            metric_name="utilization_pct",
-                            value=float(state["utilization"]) * 100,
-                            unit="pct",
-                            source="morpho_api",
-                            recorded_at=recorded_at,
-                            details=details,
-                        ),
-                    ]
+                self._append_metric(
+                    metrics,
+                    market.market_id,
+                    "available_to_borrow_assets",
+                    self._scale_raw_assets(state.get("liquidityAssets"), int(loan_decimals)),
+                    "assets",
+                    recorded_at,
+                    details,
+                )
+                self._append_metric(
+                    metrics,
+                    market.market_id,
+                    "available_to_borrow_usd",
+                    self._to_float(state.get("liquidityAssetsUsd")),
+                    "usd",
+                    recorded_at,
+                    details,
+                )
+                self._append_metric(
+                    metrics,
+                    market.market_id,
+                    "borrow_apy",
+                    self._scale_pct(state.get("borrowApy")),
+                    "pct",
+                    recorded_at,
+                    details,
+                )
+                self._append_metric(
+                    metrics,
+                    market.market_id,
+                    "supply_apy",
+                    self._scale_pct(state.get("supplyApy")),
+                    "pct",
+                    recorded_at,
+                    details,
+                )
+                self._append_metric(
+                    metrics,
+                    market.market_id,
+                    "supply_assets_usd",
+                    self._to_float(state.get("supplyAssetsUsd")),
+                    "usd",
+                    recorded_at,
+                    details,
+                )
+                self._append_metric(
+                    metrics,
+                    market.market_id,
+                    "borrow_assets_usd",
+                    self._to_float(state.get("borrowAssetsUsd")),
+                    "usd",
+                    recorded_at,
+                    details,
+                )
+                self._append_metric(
+                    metrics,
+                    market.market_id,
+                    "utilization_pct",
+                    self._scale_pct(state.get("utilization")),
+                    "pct",
+                    recorded_at,
+                    details,
                 )
         return metrics
+
+    @staticmethod
+    def _append_metric(
+        metrics: list[MetricPoint],
+        entity_id: str,
+        metric_name: str,
+        value: float | None,
+        unit: str,
+        recorded_at: datetime,
+        details: dict[str, str],
+    ) -> None:
+        if value is None:
+            logger.warning(
+                "Morpho metric skipped because value is missing: %s/%s",
+                entity_id,
+                metric_name,
+            )
+            return
+        metrics.append(
+            MetricPoint(
+                entity_id=entity_id,
+                entity_type="morpho_market",
+                metric_name=metric_name,
+                value=value,
+                unit=unit,
+                source="morpho_api",
+                recorded_at=recorded_at,
+                details=details,
+            )
+        )
+
+    @staticmethod
+    def _scale_raw_assets(value: Any, decimals: int) -> float | None:
+        parsed = MorphoCollector._to_float(value)
+        if parsed is None:
+            return None
+        return parsed / 10**decimals
+
+    @staticmethod
+    def _scale_pct(value: Any) -> float | None:
+        parsed = MorphoCollector._to_float(value)
+        if parsed is None:
+            return None
+        return parsed * 100
+
+    @staticmethod
+    def _to_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None

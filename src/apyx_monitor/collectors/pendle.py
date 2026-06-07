@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -8,8 +9,11 @@ import httpx
 from ..config import AssetCatalog, Settings
 from .base import BaseCollector, MetricPoint
 
-
 ONCHAIN_UNDERLYING_APY_ASSET_IDS = {"apyusd"}
+RATE_LIMIT_COOLDOWN_SECONDS = 600
+
+logger = logging.getLogger(__name__)
+_rate_limited_until: datetime | None = None
 
 
 class PendleCollector(BaseCollector):
@@ -21,6 +25,15 @@ class PendleCollector(BaseCollector):
         self.catalog = catalog
 
     async def collect(self) -> list[MetricPoint]:
+        global _rate_limited_until
+        now = datetime.now(timezone.utc)
+        if _rate_limited_until is not None and now < _rate_limited_until:
+            logger.warning(
+                "pendle collector skipped because Pendle API is rate limited until %s",
+                _rate_limited_until.isoformat(),
+            )
+            return []
+
         metrics: list[MetricPoint] = []
         timeout = httpx.Timeout(self.settings.http_timeout_seconds)
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -29,6 +42,13 @@ class PendleCollector(BaseCollector):
                     continue
                 url = f"{self.base_url}/{market.chain_id}/markets/{market.market_address}"
                 response = await client.get(url)
+                if response.status_code == 429:
+                    _rate_limited_until = self._rate_limit_until(response)
+                    logger.warning(
+                        "pendle collector hit rate limit; skipping Pendle API collection until %s",
+                        _rate_limited_until.isoformat(),
+                    )
+                    break
                 response.raise_for_status()
                 payload = response.json()
                 recorded_at = self._parse_timestamp(payload.get("dataUpdatedAt"))
@@ -44,7 +64,10 @@ class PendleCollector(BaseCollector):
                             unit="usd",
                             source="pendle_api",
                             recorded_at=recorded_at,
-                            details={"market_id": market.market_id, "market_address": market.market_address},
+                            details={
+                                "market_id": market.market_id,
+                                "market_address": market.market_address,
+                            },
                         )
                     )
 
@@ -92,7 +115,10 @@ class PendleCollector(BaseCollector):
                             unit="pct",
                             source="pendle_api",
                             recorded_at=recorded_at,
-                            details={"market_id": market.market_id, "market_address": market.market_address},
+                            details={
+                                "market_id": market.market_id,
+                                "market_address": market.market_address,
+                            },
                         )
                     )
 
@@ -119,6 +145,18 @@ class PendleCollector(BaseCollector):
             return datetime.now(timezone.utc)
         normalized = value.replace("Z", "+00:00")
         return datetime.fromisoformat(normalized)
+
+    @staticmethod
+    def _rate_limit_until(response: httpx.Response) -> datetime:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                seconds = max(float(retry_after), 0.0)
+            except ValueError:
+                pass
+            else:
+                return datetime.now(timezone.utc) + timedelta(seconds=seconds)
+        return datetime.now(timezone.utc) + timedelta(seconds=RATE_LIMIT_COOLDOWN_SECONDS)
 
     @staticmethod
     def _safe_get(payload: dict[str, Any], *path: str) -> Any:
