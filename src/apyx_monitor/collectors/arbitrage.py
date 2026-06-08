@@ -327,28 +327,19 @@ class ArbitrageCollector(BaseCollector):
             settlement_chain_id,
             monitor,
             funding_asset.contract_address,
-            settlement_apxusd.contract_address,
+            settlement_apyusd.contract_address,
             funding_raw,
             quote_cache,
         )
-        entry_apxusd_amount = entry_leg.amount_out_raw / 10 ** settlement_apxusd.decimals
-        first_leg = await self._quote_cached(
-            client,
-            settlement_chain_id,
-            monitor,
-            settlement_apxusd.contract_address,
-            settlement_apyusd.contract_address,
-            entry_leg.amount_out_raw,
-            quote_cache,
-        )
-        bought_apyusd_amount = first_leg.amount_out_raw / 10 ** settlement_apyusd.decimals
+        entry_apxusd_amount = 0.0
+        bought_apyusd_amount = entry_leg.amount_out_raw / 10 ** settlement_apyusd.decimals
         remote_apyusd_raw = self._scale_raw_amount(
-            first_leg.amount_out_raw,
+            entry_leg.amount_out_raw,
             settlement_apyusd.decimals,
             remote_apyusd.decimals,
         )
         remote_apyusd_amount = remote_apyusd_raw / 10 ** remote_apyusd.decimals
-        second_leg = await self._quote_cached(
+        first_leg = await self._quote_cached(
             client,
             remote_chain_id,
             monitor,
@@ -357,18 +348,27 @@ class ArbitrageCollector(BaseCollector):
             remote_apyusd_raw,
             quote_cache,
         )
-        sold_apxusd_amount = second_leg.amount_out_raw / 10 ** remote_apxusd.decimals
+        sold_apxusd_amount = first_leg.amount_out_raw / 10 ** remote_apxusd.decimals
         final_raw = self._scale_raw_amount(
-            second_leg.amount_out_raw,
+            first_leg.amount_out_raw,
             remote_apxusd.decimals,
             settlement_apxusd.decimals,
         )
         final_apxusd_amount = final_raw / 10 ** settlement_apxusd.decimals
-        exit_leg = self._reverse_entry_quote(
-            entry_leg,
+        second_leg = self._bridge_quote(
+            remote_apxusd.contract_address,
+            settlement_apxusd.contract_address,
+            first_leg.amount_out_raw,
+            final_raw,
+        )
+        exit_leg = await self._quote_cached(
+            client,
+            settlement_chain_id,
+            monitor,
             settlement_apxusd.contract_address,
             funding_asset.contract_address,
             final_raw,
+            quote_cache,
         )
         final_amount = exit_leg.amount_out_raw / 10 ** funding_asset.decimals
         first_bridge_cost_usd = self._bridge_cost_usd(
@@ -381,26 +381,14 @@ class ArbitrageCollector(BaseCollector):
             {
                 "type": "swap",
                 "chain": monitor.source_chain,
-                "action": "enter_apxusd_on_settlement_chain",
+                "action": "buy_apyusd_on_settlement_chain",
                 "from_asset": funding_asset.asset_id,
                 "from_symbol": funding_asset.symbol,
-                "to_asset": settlement_apxusd.asset_id,
-                "to_symbol": settlement_apxusd.symbol,
-                "amount_in": start_amount,
-                "amount_out": entry_apxusd_amount,
-                "routing": entry_leg.routing,
-            },
-            {
-                "type": "swap",
-                "chain": monitor.source_chain,
-                "action": "buy_apyusd_on_settlement_chain",
-                "from_asset": settlement_apxusd.asset_id,
-                "from_symbol": settlement_apxusd.symbol,
                 "to_asset": settlement_apyusd.asset_id,
                 "to_symbol": settlement_apyusd.symbol,
-                "amount_in": entry_apxusd_amount,
+                "amount_in": start_amount,
                 "amount_out": bought_apyusd_amount,
-                "routing": first_leg.routing,
+                "routing": entry_leg.routing,
             },
             {
                 "type": "bridge",
@@ -425,7 +413,7 @@ class ArbitrageCollector(BaseCollector):
                 "to_symbol": remote_apxusd.symbol,
                 "amount_in": remote_apyusd_amount,
                 "amount_out": sold_apxusd_amount,
-                "routing": second_leg.routing,
+                "routing": first_leg.routing,
             },
             {
                 "type": "bridge",
@@ -539,23 +527,23 @@ class ArbitrageCollector(BaseCollector):
             settlement_apyusd.decimals,
         )
         settlement_apyusd_amount = settlement_apyusd_raw / 10 ** settlement_apyusd.decimals
-        second_leg = await self._quote_cached(
+        second_leg = self._bridge_quote(
+            remote_apyusd.contract_address,
+            settlement_apyusd.contract_address,
+            first_leg.amount_out_raw,
+            settlement_apyusd_raw,
+        )
+        sold_apxusd_amount = entry_apxusd_amount
+        final_apxusd_amount = entry_apxusd_amount
+        exit_leg = await self._quote_cached(
             client,
             settlement_chain_id,
             monitor,
             settlement_apyusd.contract_address,
-            settlement_apxusd.contract_address,
+            funding_asset.contract_address,
             settlement_apyusd_raw,
             quote_cache,
             allow_reverse_fallback=True,
-        )
-        sold_apxusd_amount = second_leg.amount_out_raw / 10 ** settlement_apxusd.decimals
-        final_apxusd_amount = sold_apxusd_amount
-        exit_leg = self._reverse_entry_quote(
-            entry_leg,
-            settlement_apxusd.contract_address,
-            funding_asset.contract_address,
-            second_leg.amount_out_raw,
         )
         final_amount = exit_leg.amount_out_raw / 10 ** funding_asset.decimals
         first_bridge_cost_usd = self._bridge_cost_usd(
@@ -618,24 +606,12 @@ class ArbitrageCollector(BaseCollector):
             {
                 "type": "swap",
                 "chain": monitor.source_chain,
-                "action": "sell_apyusd_for_apxusd_on_settlement_chain",
+                "action": "exit_apyusd_to_funding_asset_on_settlement_chain",
                 "from_asset": settlement_apyusd.asset_id,
                 "from_symbol": settlement_apyusd.symbol,
-                "to_asset": settlement_apxusd.asset_id,
-                "to_symbol": settlement_apxusd.symbol,
-                "amount_in": settlement_apyusd_amount,
-                "amount_out": sold_apxusd_amount,
-                "routing": second_leg.routing,
-            },
-            {
-                "type": "swap",
-                "chain": monitor.source_chain,
-                "action": "exit_to_funding_asset_on_settlement_chain",
-                "from_asset": settlement_apxusd.asset_id,
-                "from_symbol": settlement_apxusd.symbol,
                 "to_asset": funding_asset.asset_id,
                 "to_symbol": funding_asset.symbol,
-                "amount_in": final_apxusd_amount,
+                "amount_in": settlement_apyusd_amount,
                 "amount_out": final_amount,
                 "routing": exit_leg.routing,
             },
@@ -870,13 +846,22 @@ class ArbitrageCollector(BaseCollector):
         quote_cache: QuoteCache | None,
         failed_status_code: int,
     ) -> SwapQuote:
+        reverse_amount_in_raw = amount_in_raw
+        token_in_decimals = self._token_decimals(token_in)
+        token_out_decimals = self._token_decimals(token_out)
+        if token_in_decimals is not None and token_out_decimals is not None:
+            reverse_amount_in_raw = self._scale_raw_amount(
+                amount_in_raw,
+                token_in_decimals,
+                token_out_decimals,
+            )
         reverse_quote = await self._quote_cached(
             client,
             chain_id,
             monitor,
             token_out,
             token_in,
-            amount_in_raw,
+            reverse_amount_in_raw,
             quote_cache,
         )
         if reverse_quote.amount_out_raw <= 0:
@@ -924,6 +909,26 @@ class ArbitrageCollector(BaseCollector):
                 "provider": "derived_reverse_entry",
                 "source": "entry_leg",
                 "entry_routing": entry_leg.routing,
+            },
+        )
+
+    @staticmethod
+    def _bridge_quote(
+        token_in: str,
+        token_out: str,
+        amount_in_raw: int,
+        amount_out_raw: int,
+    ) -> SwapQuote:
+        return SwapQuote(
+            amount_in_raw=amount_in_raw,
+            amount_out_raw=amount_out_raw,
+            min_out_raw=amount_out_raw,
+            token_in=token_in.lower(),
+            token_out=token_out.lower(),
+            method="bridge_scale",
+            routing={
+                "provider": "bridge_scale",
+                "source": "decimal_scale",
             },
         )
 

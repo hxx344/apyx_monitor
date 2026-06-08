@@ -35,8 +35,8 @@
   - 默认本金档位：Ethereum `10000` USDC
   - Pendle Hosted SDK 存在限流，套利采集遇到 `429` 会进入 10 分钟冷却并保留看板已有数据；Base/BSC 每轮只采一条目标链并交替更新，同一轮同一本金会复用相同 quote，并以更保守的请求间隔采样
   - 结算口径：始终以 Ethereum `USDC` 作为本金和最终收益资产
-  - 当 Ethereum 的 `apyUSD/apxUSD` 更低时：Ethereum `USDC -> apxUSD -> apyUSD`，桥 `apyUSD` 到目标链，目标链 `apyUSD -> apxUSD`，再桥 `apxUSD` 回 Ethereum，最后 `apxUSD -> USDC`
-  - 当目标链的 `apyUSD/apxUSD` 更低时：Ethereum `USDC -> apxUSD`，桥 `apxUSD` 到目标链，目标链 `apxUSD -> apyUSD`，桥 `apyUSD` 回 Ethereum，Ethereum `apyUSD -> apxUSD -> USDC`
+  - 当 Ethereum 的 `apyUSD/apxUSD` 更低时：Ethereum `USDC -> apyUSD`，桥 `apyUSD` 到目标链，目标链 `apyUSD -> apxUSD`，再桥 `apxUSD` 回 Ethereum，最后 `apxUSD -> USDC`
+  - 当目标链的 `apyUSD/apxUSD` 更低时：Ethereum `USDC -> apxUSD`，桥 `apxUSD` 到目标链，目标链 `apxUSD -> apyUSD`，桥 `apyUSD` 回 Ethereum，Ethereum `apyUSD -> USDC`
   - 当前桥费与 gas 成本默认按 `0` 计入，收益按闭环后回到 Ethereum 的 `USDC` 计算
 
 ## 快速启动

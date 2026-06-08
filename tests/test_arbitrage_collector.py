@@ -64,6 +64,7 @@ class MockArbitrageCollector(ArbitrageCollector):
     ) -> SwapQuote:
         amounts = {
             ("usdc", "eth-apx"): amount_in_raw * 10**12,
+            ("usdc", "eth-apy"): amount_in_raw * 2 * 10**12,
             ("eth-apx", "eth-apy"): amount_in_raw * 2,
             ("base-apy", "base-apx"): amount_in_raw * 103 // 200,
             ("base-apx", "base-apy"): amount_in_raw * 2,
@@ -71,6 +72,7 @@ class MockArbitrageCollector(ArbitrageCollector):
             ("bsc-apx", "bsc-apy"): amount_in_raw * 2,
             ("eth-apy", "eth-apx"): amount_in_raw * 51 // 100,
             ("eth-apx", "usdc"): amount_in_raw // 10**12,
+            ("eth-apy", "usdc"): amount_in_raw * 51 // 100 // 10**12,
         }
         self.quote_calls.append((chain_id, token_in, token_out, amount_in_raw))
         amount_out_raw = amounts[(token_in, token_out)]
@@ -147,7 +149,7 @@ class FailingSettlementSellCollector(MockArbitrageCollector):
         token_out: str,
         amount_in_raw: int,
     ) -> SwapQuote:
-        if token_in == "eth-apy" and token_out == "eth-apx":
+        if token_in == "eth-apy" and token_out == "usdc":
             request = httpx.Request("GET", "https://example.test/convert")
             response = httpx.Response(500, request=request, json={"message": "server error"})
             raise httpx.HTTPStatusError(
@@ -397,14 +399,22 @@ async def _run_arbitrage_profit_test(
     assert sample.start_asset.symbol == "USDC"
     assert sample.final_asset.symbol == "USDC"
     assert sample.start_amount == 10000
-    assert sample.entry_apxusd_amount == 10000
-    assert sample.final_apxusd_amount == final_usdc
+    if strategy_id == BUY_SOURCE_SELL_TARGET:
+        assert sample.entry_apxusd_amount == 0
+        assert sample.route_steps[0]["to_symbol"] == "apyUSD"
+    else:
+        assert sample.entry_apxusd_amount == 10000
+        assert sample.route_steps[0]["to_symbol"] == "apxUSD"
+    if strategy_id == BUY_SOURCE_SELL_TARGET:
+        assert sample.final_apxusd_amount == final_usdc
+    else:
+        assert sample.final_apxusd_amount == 10000
     assert sample.final_amount == final_usdc
     assert sample.net_profit_usd == profit
     assert sample.net_edge_pct == edge_pct
     assert sample.route_steps[0]["from_symbol"] == "USDC"
     assert sample.route_steps[-1]["to_symbol"] == "USDC"
-    assert sample.exit_leg.method == "derived_reverse_entry"
+    assert sample.exit_leg.method == "mock"
 
 
 async def _run_collect_quote_count_test():
@@ -458,13 +468,13 @@ async def _run_collect_quote_count_test():
     first_metrics = await collector.collect()
 
     assert first_metrics
-    assert len(collector.quote_calls) == 5
+    assert len(collector.quote_calls) == 6
     assert (
         len(
             [
                 call
                 for call in collector.quote_calls
-                if call[1:] == ("usdc", "eth-apx", 10_000_000_000)
+                if call[1:] == ("usdc", "eth-apy", 10_000_000_000)
             ]
         )
         == 1
@@ -474,7 +484,7 @@ async def _run_collect_quote_count_test():
             [
                 call
                 for call in collector.quote_calls
-                if call[1] == "eth-apx" and call[2] == "eth-apy"
+                if call[1] == "eth-apx" and call[2] == "usdc"
             ]
         )
         == 1
@@ -484,16 +494,14 @@ async def _run_collect_quote_count_test():
             [
                 call
                 for call in collector.quote_calls
-                if call[1] == "eth-apy" and call[2] == "eth-apx"
+                if call[1] == "eth-apy" and call[2] == "usdc"
             ]
         )
         == 1
     )
     assert [call for call in collector.quote_calls if call[1].startswith("base-")]
     assert not [call for call in collector.quote_calls if call[1].startswith("bsc-")]
-    assert not [
-        call for call in collector.quote_calls if call[1] == "eth-apx" and call[2] == "usdc"
-    ]
+    assert [call for call in collector.quote_calls if call[1] == "eth-apx" and call[2] == "usdc"]
 
     first_best = _best_profit_metric(first_metrics)
     assert (
@@ -503,14 +511,14 @@ async def _run_collect_quote_count_test():
     second_metrics = await collector.collect()
 
     assert second_metrics
-    assert len(collector.quote_calls) == 10
-    second_collect_calls = collector.quote_calls[5:]
+    assert len(collector.quote_calls) == 12
+    second_collect_calls = collector.quote_calls[6:]
     assert (
         len(
             [
                 call
                 for call in second_collect_calls
-                if call[1:] == ("usdc", "eth-apx", 10_000_000_000)
+                if call[1:] == ("usdc", "eth-apy", 10_000_000_000)
             ]
         )
         == 1
@@ -724,9 +732,9 @@ async def _run_settlement_sell_fallback_test():
             {},
         )
 
-    assert sample.second_leg.method == "derived_reverse_http_500"
+    assert sample.exit_leg.method == "derived_reverse_http_500"
     assert round(sample.final_amount, 6) == 10000
-    assert any(call[1] == "eth-apx" and call[2] == "eth-apy" for call in collector.quote_calls)
+    assert any(call[1] == "usdc" and call[2] == "eth-apy" for call in collector.quote_calls)
 
 
 async def _run_quote_uses_pendleswap_sdk_convert_api_test(monkeypatch):
