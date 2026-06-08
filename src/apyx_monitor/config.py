@@ -34,7 +34,7 @@ class Settings(BaseSettings):
         default=0.2, alias="ARBITRAGE_CURVE_GATE_MIN_CHANGE_PCT"
     )
     arbitrage_curve_gate_change_window_seconds: int = Field(
-        default=60, alias="ARBITRAGE_CURVE_GATE_CHANGE_WINDOW_SECONDS"
+        default=120, alias="ARBITRAGE_CURVE_GATE_CHANGE_WINDOW_SECONDS"
     )
     http_timeout_seconds: int = Field(default=15, alias="HTTP_TIMEOUT_SECONDS")
     dashboard_username: str = Field(default="admin", alias="DASHBOARD_USERNAME")

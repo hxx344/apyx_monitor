@@ -346,7 +346,7 @@ def test_curve_nav_gate_allows_path_calculation_when_deviation_changes_quickly(m
     assert collector._should_calculate_arbitrage_paths(now) is True
 
 
-def test_curve_nav_gate_ignores_change_outside_one_minute(monkeypatch):
+def test_curve_nav_gate_ignores_change_outside_window(monkeypatch):
     now = datetime.now(timezone.utc)
     collector = ArbitrageCollector(Settings(), _minimal_catalog())
     monkeypatch.setattr(
@@ -378,7 +378,7 @@ def test_curve_nav_gate_ignores_change_outside_one_minute(monkeypatch):
                 value=0.45,
                 unit="pct",
                 source="test",
-                recorded_at=now - timedelta(seconds=80),
+                recorded_at=now - timedelta(seconds=140),
             ),
         ],
     )
