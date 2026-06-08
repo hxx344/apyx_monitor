@@ -23,6 +23,19 @@ class Settings(BaseSettings):
     )
     collection_interval_seconds: int = Field(default=60, alias="COLLECTION_INTERVAL_SECONDS")
     nav_curve_interval_seconds: int = Field(default=20, alias="NAV_CURVE_INTERVAL_SECONDS")
+    arbitrage_curve_gate_enabled: bool = Field(default=True, alias="ARBITRAGE_CURVE_GATE_ENABLED")
+    arbitrage_curve_gate_max_age_seconds: int = Field(
+        default=180, alias="ARBITRAGE_CURVE_GATE_MAX_AGE_SECONDS"
+    )
+    arbitrage_curve_gate_min_deviation_pct: float = Field(
+        default=0.5, alias="ARBITRAGE_CURVE_GATE_MIN_DEVIATION_PCT"
+    )
+    arbitrage_curve_gate_min_change_pct: float = Field(
+        default=0.2, alias="ARBITRAGE_CURVE_GATE_MIN_CHANGE_PCT"
+    )
+    arbitrage_curve_gate_change_window_seconds: int = Field(
+        default=60, alias="ARBITRAGE_CURVE_GATE_CHANGE_WINDOW_SECONDS"
+    )
     http_timeout_seconds: int = Field(default=15, alias="HTTP_TIMEOUT_SECONDS")
     dashboard_username: str = Field(default="admin", alias="DASHBOARD_USERNAME")
     dashboard_password: str = Field(default="admin", alias="DASHBOARD_PASSWORD")

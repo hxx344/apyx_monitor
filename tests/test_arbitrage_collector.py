@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -18,6 +19,7 @@ from apyx_monitor.config import (
     ChainDefinition,
     Settings,
 )
+from apyx_monitor.models import MetricSnapshot
 
 
 def _asset(
@@ -47,6 +49,9 @@ class MockArbitrageCollector(ArbitrageCollector):
     def __init__(self, settings: Settings, catalog: AssetCatalog) -> None:
         super().__init__(settings, catalog)
         self.quote_calls: list[tuple[int, str, str, int]] = []
+
+    def _should_calculate_arbitrage_paths(self, now):
+        return True
 
     async def _quote(
         self,
@@ -179,6 +184,161 @@ def test_settlement_sell_uses_reverse_quote_fallback_when_pendle_returns_500():
 
 def test_quote_uses_velora_market_api(monkeypatch):
     asyncio.run(_run_quote_uses_velora_market_api_test(monkeypatch))
+
+
+def test_curve_nav_gate_skips_velora_when_deviation_is_quiet(monkeypatch):
+    now = datetime.now(timezone.utc)
+    collector = ArbitrageCollector(Settings(), _minimal_catalog())
+    monkeypatch.setattr(
+        collector,
+        "_latest_curve_nav_deviation_snapshots",
+        lambda limit: [
+            MetricSnapshot(
+                entity_id="curve-apyusd-apxusd",
+                entity_type="curve_pool",
+                metric_name="curve_rate_vs_nav_deviation_pct",
+                value=0.12,
+                unit="pct",
+                source="test",
+                recorded_at=now,
+            ),
+            MetricSnapshot(
+                entity_id="curve-apyusd-apxusd",
+                entity_type="curve_pool",
+                metric_name="curve_rate_vs_nav_deviation_pct",
+                value=0.10,
+                unit="pct",
+                source="test",
+                recorded_at=now - timedelta(seconds=20),
+            ),
+        ],
+    )
+
+    assert collector._should_calculate_arbitrage_paths(now) is False
+
+
+def test_curve_nav_gate_allows_velora_when_deviation_is_large(monkeypatch):
+    now = datetime.now(timezone.utc)
+    collector = ArbitrageCollector(Settings(), _minimal_catalog())
+    monkeypatch.setattr(
+        collector,
+        "_latest_curve_nav_deviation_snapshots",
+        lambda limit: [
+            MetricSnapshot(
+                entity_id="curve-apyusd-apxusd",
+                entity_type="curve_pool",
+                metric_name="curve_rate_vs_nav_deviation_pct",
+                value=0.75,
+                unit="pct",
+                source="test",
+                recorded_at=now,
+            )
+        ],
+    )
+
+    assert collector._should_calculate_arbitrage_paths(now) is True
+
+
+def test_curve_nav_gate_allows_velora_when_deviation_changes_quickly(monkeypatch):
+    now = datetime.now(timezone.utc)
+    collector = ArbitrageCollector(Settings(), _minimal_catalog())
+    monkeypatch.setattr(
+        collector,
+        "_latest_curve_nav_deviation_snapshots",
+        lambda limit: [
+            MetricSnapshot(
+                entity_id="curve-apyusd-apxusd",
+                entity_type="curve_pool",
+                metric_name="curve_rate_vs_nav_deviation_pct",
+                value=0.30,
+                unit="pct",
+                source="test",
+                recorded_at=now,
+            ),
+            MetricSnapshot(
+                entity_id="curve-apyusd-apxusd",
+                entity_type="curve_pool",
+                metric_name="curve_rate_vs_nav_deviation_pct",
+                value=0.05,
+                unit="pct",
+                source="test",
+                recorded_at=now - timedelta(seconds=20),
+            ),
+            MetricSnapshot(
+                entity_id="curve-apyusd-apxusd",
+                entity_type="curve_pool",
+                metric_name="curve_rate_vs_nav_deviation_pct",
+                value=1.20,
+                unit="pct",
+                source="test",
+                recorded_at=now - timedelta(seconds=80),
+            ),
+        ],
+    )
+
+    assert collector._should_calculate_arbitrage_paths(now) is True
+
+
+def test_curve_nav_gate_ignores_change_outside_one_minute(monkeypatch):
+    now = datetime.now(timezone.utc)
+    collector = ArbitrageCollector(Settings(), _minimal_catalog())
+    monkeypatch.setattr(
+        collector,
+        "_latest_curve_nav_deviation_snapshots",
+        lambda limit: [
+            MetricSnapshot(
+                entity_id="curve-apyusd-apxusd",
+                entity_type="curve_pool",
+                metric_name="curve_rate_vs_nav_deviation_pct",
+                value=0.12,
+                unit="pct",
+                source="test",
+                recorded_at=now,
+            ),
+            MetricSnapshot(
+                entity_id="curve-apyusd-apxusd",
+                entity_type="curve_pool",
+                metric_name="curve_rate_vs_nav_deviation_pct",
+                value=0.11,
+                unit="pct",
+                source="test",
+                recorded_at=now - timedelta(seconds=20),
+            ),
+            MetricSnapshot(
+                entity_id="curve-apyusd-apxusd",
+                entity_type="curve_pool",
+                metric_name="curve_rate_vs_nav_deviation_pct",
+                value=0.45,
+                unit="pct",
+                source="test",
+                recorded_at=now - timedelta(seconds=80),
+            ),
+        ],
+    )
+
+    assert collector._should_calculate_arbitrage_paths(now) is False
+
+
+def test_curve_nav_gate_skips_velora_when_deviation_is_stale(monkeypatch):
+    now = datetime.now(timezone.utc)
+    collector = ArbitrageCollector(Settings(), _minimal_catalog())
+    monkeypatch.setattr(
+        collector,
+        "_latest_curve_nav_deviation_snapshots",
+        lambda limit: [
+            MetricSnapshot(
+                entity_id="curve-apyusd-apxusd",
+                entity_type="curve_pool",
+                metric_name="curve_rate_vs_nav_deviation_pct",
+                value=1.25,
+                unit="pct",
+                source="test",
+                recorded_at=now - timedelta(seconds=181),
+            )
+        ],
+    )
+
+    assert collector._should_calculate_arbitrage_paths(now) is False
 
 
 async def _run_arbitrage_profit_test(
@@ -677,4 +837,14 @@ def _best_profit_metric(metrics):
         for metric in metrics
         if metric.entity_id == "arb-apyusd-apxusd-crosschain"
         and metric.metric_name == "best_net_profit_usd"
+    )
+
+
+def _minimal_catalog() -> AssetCatalog:
+    return AssetCatalog(
+        chains=[],
+        assets=[],
+        pendle_markets=[],
+        morpho_markets=[],
+        arbitrage_monitors=[],
     )

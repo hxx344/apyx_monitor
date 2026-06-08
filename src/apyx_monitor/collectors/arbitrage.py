@@ -8,8 +8,11 @@ from decimal import Decimal
 from typing import Any
 
 import httpx
+from sqlmodel import Session, desc, select
 
 from ..config import ArbitrageMonitorDefinition, AssetCatalog, AssetDefinition, Settings
+from ..db import engine
+from ..models import MetricSnapshot
 from .base import BaseCollector, MetricPoint
 
 VELORA_MARKET_API_BASE_URL = "https://api.paraswap.io"
@@ -18,6 +21,8 @@ BUY_SOURCE_SELL_TARGET = "buy-source-sell-target"
 BUY_TARGET_SELL_SOURCE = "buy-target-sell-source"
 QUOTE_THROTTLE_SECONDS = 4.0
 RATE_LIMIT_COOLDOWN_SECONDS = 600
+CURVE_NAV_ENTITY_ID = "curve-apyusd-apxusd"
+CURVE_NAV_DEVIATION_METRIC = "curve_rate_vs_nav_deviation_pct"
 
 logger = logging.getLogger(__name__)
 _rate_limited_until: datetime | None = None
@@ -183,6 +188,12 @@ class ArbitrageCollector(BaseCollector):
             selected_index + 1,
             len(monitor_contexts),
         )
+        if not self._should_calculate_arbitrage_paths(now):
+            return self._samples_to_metrics(
+                samples,
+                best_candidates=list(self._latest_samples.values()),
+                best_recorded_at=now,
+            )
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             for notional_usd in monitor.notionals_usd:
@@ -1019,6 +1030,85 @@ class ArbitrageCollector(BaseCollector):
             amount * asset.price_hint_usd * monitor.bridge_fee_bps / 10000
             + monitor.bridge_fixed_usd
         )
+
+    def _should_calculate_arbitrage_paths(self, now: datetime) -> bool:
+        if not self.settings.arbitrage_curve_gate_enabled:
+            return True
+
+        snapshots = self._latest_curve_nav_deviation_snapshots(limit=10)
+        if not snapshots:
+            logger.info(
+                "arbitrage collector skipped Velora path calculation because Curve/NAV "
+                "deviation is not available yet"
+            )
+            return False
+
+        latest = snapshots[0]
+        latest_recorded_at = self._as_utc(latest.recorded_at)
+        age_seconds = (now - latest_recorded_at).total_seconds()
+        if age_seconds > self.settings.arbitrage_curve_gate_max_age_seconds:
+            logger.info(
+                "arbitrage collector skipped Velora path calculation because latest "
+                "Curve/NAV deviation is stale: age=%.0fs max_age=%ss",
+                age_seconds,
+                self.settings.arbitrage_curve_gate_max_age_seconds,
+            )
+            return False
+
+        latest_deviation_pct = abs(latest.value)
+        deviation_triggered = (
+            latest_deviation_pct >= self.settings.arbitrage_curve_gate_min_deviation_pct
+        )
+        change_window_started_at = now - timedelta(
+            seconds=self.settings.arbitrage_curve_gate_change_window_seconds
+        )
+        window_values = [
+            snapshot.value
+            for snapshot in snapshots
+            if self._as_utc(snapshot.recorded_at) >= change_window_started_at
+        ]
+        change_pct = max(window_values) - min(window_values) if len(window_values) > 1 else 0.0
+        change_triggered = change_pct >= self.settings.arbitrage_curve_gate_min_change_pct
+
+        if deviation_triggered or change_triggered:
+            logger.info(
+                "arbitrage collector entering Velora path calculation: "
+                "curve_nav_deviation=%.4f%% change=%.4f%% window=%ss",
+                latest.value,
+                change_pct,
+                self.settings.arbitrage_curve_gate_change_window_seconds,
+            )
+            return True
+
+        logger.info(
+            "arbitrage collector skipped Velora path calculation because Curve/NAV is quiet: "
+            "deviation=%.4f%% min_deviation=%.4f%% change=%.4f%% min_change=%.4f%% "
+            "window=%ss",
+            latest.value,
+            self.settings.arbitrage_curve_gate_min_deviation_pct,
+            change_pct,
+            self.settings.arbitrage_curve_gate_min_change_pct,
+            self.settings.arbitrage_curve_gate_change_window_seconds,
+        )
+        return False
+
+    @staticmethod
+    def _latest_curve_nav_deviation_snapshots(limit: int) -> list[MetricSnapshot]:
+        with Session(engine) as session:
+            statement = (
+                select(MetricSnapshot)
+                .where(MetricSnapshot.entity_id == CURVE_NAV_ENTITY_ID)
+                .where(MetricSnapshot.metric_name == CURVE_NAV_DEVIATION_METRIC)
+                .order_by(desc(MetricSnapshot.recorded_at), desc(MetricSnapshot.id))
+                .limit(limit)
+            )
+            return list(session.exec(statement).all())
+
+    @staticmethod
+    def _as_utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
     @staticmethod
     def _display_chain(chain: str) -> str:
