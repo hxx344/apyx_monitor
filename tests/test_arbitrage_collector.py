@@ -11,6 +11,7 @@ from apyx_monitor.collectors.arbitrage import (
     BUY_SOURCE_SELL_TARGET,
     BUY_TARGET_SELL_SOURCE,
     ArbitrageCollector,
+    PENDLESWAP_PROVIDER,
     PendleSwapRouteUnavailableError,
     SwapQuote,
 )
@@ -63,6 +64,7 @@ class MockArbitrageCollector(ArbitrageCollector):
         token_in: str,
         token_out: str,
         amount_in_raw: int,
+        quote_provider: str = PENDLESWAP_PROVIDER,
     ) -> SwapQuote:
         amounts = {
             ("usdc", "eth-apx"): amount_in_raw * 10**12,
@@ -97,12 +99,21 @@ class FailingRemoteBuyCollector(MockArbitrageCollector):
         token_in: str,
         token_out: str,
         amount_in_raw: int,
+        quote_provider: str = PENDLESWAP_PROVIDER,
     ) -> SwapQuote:
         if token_in == "base-apx" and token_out == "base-apy":
             request = httpx.Request("GET", "https://example.test/convert")
             response = httpx.Response(501, request=request, json={"message": "not implemented"})
             raise httpx.HTTPStatusError("501 Not Implemented", request=request, response=response)
-        return await super()._quote(client, chain_id, monitor, token_in, token_out, amount_in_raw)
+        return await super()._quote(
+            client,
+            chain_id,
+            monitor,
+            token_in,
+            token_out,
+            amount_in_raw,
+            quote_provider=quote_provider,
+        )
 
 
 class UnprocessableRemoteBuyCollector(MockArbitrageCollector):
@@ -114,6 +125,7 @@ class UnprocessableRemoteBuyCollector(MockArbitrageCollector):
         token_in: str,
         token_out: str,
         amount_in_raw: int,
+        quote_provider: str = PENDLESWAP_PROVIDER,
     ) -> SwapQuote:
         if token_in == "base-apx" and token_out == "base-apy":
             request = httpx.Request(
@@ -123,7 +135,15 @@ class UnprocessableRemoteBuyCollector(MockArbitrageCollector):
             raise httpx.HTTPStatusError(
                 "422 Unprocessable Entity", request=request, response=response
             )
-        return await super()._quote(client, chain_id, monitor, token_in, token_out, amount_in_raw)
+        return await super()._quote(
+            client,
+            chain_id,
+            monitor,
+            token_in,
+            token_out,
+            amount_in_raw,
+            quote_provider=quote_provider,
+        )
 
 
 class UnavailableRemotePairCollector(MockArbitrageCollector):
@@ -135,10 +155,19 @@ class UnavailableRemotePairCollector(MockArbitrageCollector):
         token_in: str,
         token_out: str,
         amount_in_raw: int,
+        quote_provider: str = PENDLESWAP_PROVIDER,
     ) -> SwapQuote:
         if {token_in, token_out} == {"base-apx", "base-apy"}:
             raise PendleSwapRouteUnavailableError("PendleSwap route unavailable")
-        return await super()._quote(client, chain_id, monitor, token_in, token_out, amount_in_raw)
+        return await super()._quote(
+            client,
+            chain_id,
+            monitor,
+            token_in,
+            token_out,
+            amount_in_raw,
+            quote_provider=quote_provider,
+        )
 
 
 class FailingSettlementSellCollector(MockArbitrageCollector):
@@ -150,6 +179,7 @@ class FailingSettlementSellCollector(MockArbitrageCollector):
         token_in: str,
         token_out: str,
         amount_in_raw: int,
+        quote_provider: str = PENDLESWAP_PROVIDER,
     ) -> SwapQuote:
         if token_in == "eth-apy" and token_out == "usdc":
             request = httpx.Request("GET", "https://example.test/convert")
@@ -157,7 +187,15 @@ class FailingSettlementSellCollector(MockArbitrageCollector):
             raise httpx.HTTPStatusError(
                 "500 Internal Server Error", request=request, response=response
             )
-        return await super()._quote(client, chain_id, monitor, token_in, token_out, amount_in_raw)
+        return await super()._quote(
+            client,
+            chain_id,
+            monitor,
+            token_in,
+            token_out,
+            amount_in_raw,
+            quote_provider=quote_provider,
+        )
 
 
 def test_arbitrage_profit_is_measured_from_ethereum_usdc():
@@ -237,7 +275,7 @@ def test_curve_nav_gate_skips_path_calculation_when_deviation_is_quiet(monkeypat
     assert collector._should_calculate_arbitrage_paths(now) is False
 
 
-def test_curve_nav_gate_allows_path_calculation_when_deviation_is_large(monkeypatch):
+def test_curve_nav_gate_skips_path_calculation_when_only_deviation_is_large(monkeypatch):
     now = datetime.now(timezone.utc)
     collector = ArbitrageCollector(Settings(), _minimal_catalog())
     monkeypatch.setattr(
@@ -252,11 +290,20 @@ def test_curve_nav_gate_allows_path_calculation_when_deviation_is_large(monkeypa
                 unit="pct",
                 source="test",
                 recorded_at=now,
+            ),
+            MetricSnapshot(
+                entity_id="curve-apyusd-apxusd",
+                entity_type="curve_pool",
+                metric_name="curve_rate_vs_nav_deviation_pct",
+                value=0.75,
+                unit="pct",
+                source="test",
+                recorded_at=now - timedelta(seconds=20),
             )
         ],
     )
 
-    assert collector._should_calculate_arbitrage_paths(now) is True
+    assert collector._should_calculate_arbitrage_paths(now) is False
 
 
 def test_curve_nav_gate_allows_path_calculation_when_deviation_changes_quickly(monkeypatch):
@@ -859,40 +906,45 @@ async def _run_quote_falls_back_to_jumper_when_pendleswap_is_rate_limited_test(m
                 request=request,
                 json={
                     "estimate": {
-                        "toAmount": "1900000000000000000",
-                        "toAmountMin": "1800000000000000000",
+                        "toAmount": _fallback_quote_amount(params["toToken"]),
+                        "toAmountMin": _fallback_quote_amount(params["toToken"]),
                         "approvalAddress": "0xapproval",
                     },
                     "tool": "jumper",
                 },
             )
 
-    monitor = ArbitrageMonitorDefinition(
-        monitor_id="arb-ethereum-base",
-        label="Ethereum <-> Base",
-        source_chain="ethereum",
-        target_chain="base",
-        funding_asset_id="usdc-ethereum",
-        start_asset_id="apxusd-ethereum",
-        intermediate_asset_id="apyusd-ethereum",
-        final_asset_id="apxusd-base",
-    )
-    collector = ArbitrageCollector(Settings(), _quote_catalog(monitor))
+    monitor, catalog, chain_id_map = _fallback_path_catalog()
+    collector = ArbitrageCollector(Settings(), catalog)
     client = FakeClient()
 
-    quote = await collector._quote(client, 1, monitor, "eth-apx", "eth-apy", 10**18)
+    sample = await collector._sample_monitor(
+        client,
+        monitor,
+        chain_id_map,
+        catalog.assets[0],
+        catalog.assets[1],
+        catalog.assets[2],
+        catalog.assets[3],
+        catalog.assets[4],
+        BUY_SOURCE_SELL_TARGET,
+        10000,
+        {},
+    )
 
-    assert [call[0] for call in client.calls] == ["POST", "GET"]
+    assert [call[0] for call in client.calls] == ["POST", "GET", "GET", "GET"]
     assert client.calls[1][1] == "https://li.quest/v1/quote"
     assert client.calls[1][2]["fromChain"] == "1"
     assert client.calls[1][2]["toChain"] == "1"
-    assert client.calls[1][2]["fromToken"] == "eth-apx"
+    assert client.calls[1][2]["fromToken"] == "usdc"
     assert client.calls[1][2]["toToken"] == "eth-apy"
-    assert quote.amount_out_raw == 1900000000000000000
-    assert quote.min_out_raw == 1800000000000000000
-    assert quote.method == "jumper_lifi"
-    assert quote.routing["provider"] == "jumper"
-    assert sleep_calls == [4.0, 4.0]
+    assert all(call[1] == "https://li.quest/v1/quote" for call in client.calls[1:])
+    assert [step["routing"]["provider"] for step in sample.route_steps if step["type"] == "swap"] == [
+        "jumper",
+        "jumper",
+        "jumper",
+    ]
+    assert sleep_calls == [4.0, 4.0, 4.0, 4.0]
     pendle_rate_limit.clear_rate_limit()
     arbitrage_module._quote_provider_cooldowns.clear()
 
@@ -928,38 +980,45 @@ async def _run_quote_falls_back_to_velora_when_pendleswap_and_jumper_are_rate_li
                 request=request,
                 json={
                     "priceRoute": {
-                        "destAmount": "1700000000000000000",
+                        "destAmount": _fallback_quote_amount(params["destToken"]),
                         "version": "6.2",
                         "bestRoute": [{"percent": 100}],
                     }
                 },
             )
 
-    monitor = ArbitrageMonitorDefinition(
-        monitor_id="arb-ethereum-base",
-        label="Ethereum <-> Base",
-        source_chain="ethereum",
-        target_chain="base",
-        funding_asset_id="usdc-ethereum",
-        start_asset_id="apxusd-ethereum",
-        intermediate_asset_id="apyusd-ethereum",
-        final_asset_id="apxusd-base",
-    )
-    collector = ArbitrageCollector(Settings(), _quote_catalog(monitor))
+    monitor, catalog, chain_id_map = _fallback_path_catalog()
+    collector = ArbitrageCollector(Settings(), catalog)
     client = FakeClient()
 
-    quote = await collector._quote(client, 1, monitor, "eth-apx", "eth-apy", 10**18)
+    sample = await collector._sample_monitor(
+        client,
+        monitor,
+        chain_id_map,
+        catalog.assets[0],
+        catalog.assets[1],
+        catalog.assets[2],
+        catalog.assets[3],
+        catalog.assets[4],
+        BUY_SOURCE_SELL_TARGET,
+        10000,
+        {},
+    )
 
-    assert [call[0] for call in client.calls] == ["POST", "GET", "GET"]
+    assert [call[0] for call in client.calls] == ["POST", "GET", "GET", "GET", "GET"]
+    assert client.calls[1][1] == "https://li.quest/v1/quote"
     assert client.calls[2][1] == "https://api.paraswap.io/prices"
-    assert client.calls[2][2]["srcToken"] == "eth-apx"
+    assert client.calls[2][2]["srcToken"] == "usdc"
     assert client.calls[2][2]["destToken"] == "eth-apy"
     assert client.calls[2][2]["side"] == "SELL"
     assert client.calls[2][2]["network"] == "1"
-    assert quote.amount_out_raw == 1700000000000000000
-    assert quote.method == "velora_market_6.2"
-    assert quote.routing["provider"] == "velora"
-    assert sleep_calls == [4.0, 4.0, 4.0]
+    assert all(call[1] == "https://api.paraswap.io/prices" for call in client.calls[2:])
+    assert [step["routing"]["provider"] for step in sample.route_steps if step["type"] == "swap"] == [
+        "velora",
+        "velora",
+        "velora",
+    ]
+    assert sleep_calls == [4.0, 4.0, 4.0, 4.0, 4.0]
     pendle_rate_limit.clear_rate_limit()
     arbitrage_module._quote_provider_cooldowns.clear()
 
@@ -996,3 +1055,50 @@ def _quote_catalog(monitor: ArbitrageMonitorDefinition) -> AssetCatalog:
         morpho_markets=[],
         arbitrage_monitors=[monitor],
     )
+
+
+def _fallback_path_catalog() -> tuple[
+    ArbitrageMonitorDefinition,
+    AssetCatalog,
+    dict[str, int],
+]:
+    monitor = ArbitrageMonitorDefinition(
+        monitor_id="arb-ethereum-base",
+        label="Ethereum <-> Base",
+        source_chain="ethereum",
+        target_chain="base",
+        funding_asset_id="usdc-ethereum",
+        start_asset_id="apxusd-ethereum",
+        intermediate_asset_id="apyusd-ethereum",
+        final_asset_id="apxusd-base",
+    )
+    catalog = AssetCatalog(
+        chains=[
+            ChainDefinition(
+                chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url=""
+            ),
+            ChainDefinition(
+                chain="base", chain_id=8453, rpc_url_env="BASE_RPC", default_rpc_url=""
+            ),
+        ],
+        assets=[
+            _asset("usdc-ethereum", "usdc", "USDC", "ethereum", "usdc", 6, enabled=False),
+            _asset("apxusd-ethereum", "apxusd", "apxUSD", "ethereum", "eth-apx"),
+            _asset("apyusd-ethereum", "apyusd", "apyUSD", "ethereum", "eth-apy"),
+            _asset("apxusd-base", "apxusd", "apxUSD", "base", "base-apx"),
+            _asset("apyusd-base", "apyusd", "apyUSD", "base", "base-apy"),
+        ],
+        pendle_markets=[],
+        morpho_markets=[],
+        arbitrage_monitors=[monitor],
+    )
+    return monitor, catalog, {"ethereum": 1, "base": 8453}
+
+
+def _fallback_quote_amount(token_out: str) -> str:
+    amounts = {
+        "eth-apy": str(20_000 * 10**18),
+        "base-apx": str(10_300 * 10**18),
+        "usdc": str(10_300 * 10**6),
+    }
+    return amounts[token_out]

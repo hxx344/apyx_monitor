@@ -284,6 +284,80 @@ class ArbitrageCollector(BaseCollector):
         notional_usd: float,
         quote_cache: QuoteCache | None = None,
     ) -> ArbitrageSample:
+        route_failures: list[str] = []
+        rate_limit_failures: list[str] = []
+
+        for quote_provider in QUOTE_PROVIDERS:
+            rate_limited_until = self._quote_provider_rate_limited_until(quote_provider)
+            if rate_limited_until is not None:
+                logger.info(
+                    "arbitrage path quote provider %s is rate limited until %s; "
+                    "trying next provider",
+                    quote_provider,
+                    rate_limited_until.isoformat(),
+                )
+                rate_limit_failures.append(f"{quote_provider}:cooldown")
+                continue
+            try:
+                return await self._sample_monitor_with_provider(
+                    client,
+                    monitor,
+                    chain_id_map,
+                    funding_asset,
+                    settlement_apxusd,
+                    settlement_apyusd,
+                    remote_apxusd,
+                    remote_apyusd,
+                    strategy_id,
+                    notional_usd,
+                    quote_cache,
+                    quote_provider,
+                )
+            except QuoteRateLimitedError as exc:
+                retry_after = exc.retry_after_seconds or QUOTE_PROVIDER_COOLDOWN_SECONDS
+                rate_limited_until = self._mark_quote_provider_rate_limited_for(
+                    quote_provider,
+                    retry_after,
+                )
+                logger.warning(
+                    "arbitrage path quote provider %s is rate limited until %s; "
+                    "restarting path with next provider",
+                    quote_provider,
+                    rate_limited_until.isoformat(),
+                )
+                rate_limit_failures.append(f"{quote_provider}:retry_after={retry_after:.0f}s")
+                continue
+            except QuoteRouteUnavailableError as exc:
+                logger.info(
+                    "arbitrage path quote provider %s route unavailable; "
+                    "restarting path with next provider: %s",
+                    quote_provider,
+                    exc,
+                )
+                route_failures.append(f"{quote_provider}:{exc}")
+                continue
+
+        if route_failures:
+            raise QuoteRouteUnavailableError("; ".join(route_failures))
+        raise QuoteRateLimitedError(
+            "all quote providers are rate limited: " + "; ".join(rate_limit_failures)
+        )
+
+    async def _sample_monitor_with_provider(
+        self,
+        client: httpx.AsyncClient,
+        monitor: ArbitrageMonitorDefinition,
+        chain_id_map: dict[str, int],
+        funding_asset: AssetDefinition,
+        settlement_apxusd: AssetDefinition,
+        settlement_apyusd: AssetDefinition,
+        remote_apxusd: AssetDefinition,
+        remote_apyusd: AssetDefinition,
+        strategy_id: str,
+        notional_usd: float,
+        quote_cache: QuoteCache | None,
+        quote_provider: str,
+    ) -> ArbitrageSample:
         if strategy_id == BUY_SOURCE_SELL_TARGET:
             return await self._sample_buy_source_sell_target(
                 client,
@@ -296,6 +370,7 @@ class ArbitrageCollector(BaseCollector):
                 remote_apyusd,
                 notional_usd,
                 quote_cache,
+                quote_provider,
             )
         if strategy_id == BUY_TARGET_SELL_SOURCE:
             return await self._sample_buy_target_sell_source(
@@ -309,6 +384,7 @@ class ArbitrageCollector(BaseCollector):
                 remote_apyusd,
                 notional_usd,
                 quote_cache,
+                quote_provider,
             )
         raise ValueError(f"Unsupported arbitrage strategy: {strategy_id}")
 
@@ -324,6 +400,7 @@ class ArbitrageCollector(BaseCollector):
         remote_apyusd: AssetDefinition,
         notional_usd: float,
         quote_cache: QuoteCache | None,
+        quote_provider: str,
     ) -> ArbitrageSample:
         recorded_at = datetime.now(timezone.utc)
         settlement_chain_id = chain_id_map[monitor.source_chain]
@@ -342,6 +419,7 @@ class ArbitrageCollector(BaseCollector):
             settlement_apyusd.contract_address,
             funding_raw,
             quote_cache,
+            quote_provider=quote_provider,
         )
         entry_apxusd_amount = 0.0
         bought_apyusd_amount = entry_leg.amount_out_raw / 10 ** settlement_apyusd.decimals
@@ -355,6 +433,7 @@ class ArbitrageCollector(BaseCollector):
             remote_apxusd.contract_address,
             remote_apyusd_raw,
             quote_cache,
+            quote_provider=quote_provider,
         )
         sold_apxusd_amount = first_leg.amount_out_raw / 10 ** remote_apxusd.decimals
         final_raw = first_leg.amount_out_raw
@@ -372,6 +451,7 @@ class ArbitrageCollector(BaseCollector):
             funding_asset.contract_address,
             final_raw,
             quote_cache,
+            quote_provider=quote_provider,
         )
         final_amount = exit_leg.amount_out_raw / 10 ** funding_asset.decimals
         first_bridge_cost_usd = self._bridge_cost_usd(
@@ -487,6 +567,7 @@ class ArbitrageCollector(BaseCollector):
         remote_apyusd: AssetDefinition,
         notional_usd: float,
         quote_cache: QuoteCache | None,
+        quote_provider: str,
     ) -> ArbitrageSample:
         recorded_at = datetime.now(timezone.utc)
         settlement_chain_id = chain_id_map[monitor.source_chain]
@@ -504,6 +585,7 @@ class ArbitrageCollector(BaseCollector):
             settlement_apxusd.contract_address,
             funding_raw,
             quote_cache,
+            quote_provider=quote_provider,
         )
         entry_apxusd_amount = entry_leg.amount_out_raw / 10 ** settlement_apxusd.decimals
         remote_apxusd_raw = entry_leg.amount_out_raw
@@ -518,6 +600,7 @@ class ArbitrageCollector(BaseCollector):
             remote_apxusd_raw,
             quote_cache,
             allow_reverse_fallback=True,
+            quote_provider=quote_provider,
         )
         bought_apyusd_amount = first_leg.amount_out_raw / 10 ** remote_apyusd.decimals
         settlement_apyusd_raw = first_leg.amount_out_raw
@@ -538,6 +621,7 @@ class ArbitrageCollector(BaseCollector):
             settlement_apyusd_raw,
             quote_cache,
             allow_reverse_fallback=True,
+            quote_provider=quote_provider,
         )
         final_amount = exit_leg.amount_out_raw / 10 ** funding_asset.decimals
         first_bridge_cost_usd = self._bridge_cost_usd(
@@ -715,56 +799,16 @@ class ArbitrageCollector(BaseCollector):
         token_in: str,
         token_out: str,
         amount_in_raw: int,
+        quote_provider: str = PENDLESWAP_PROVIDER,
     ) -> SwapQuote:
-        route_failures: list[str] = []
-        rate_limit_failures: list[str] = []
-
-        for provider in QUOTE_PROVIDERS:
-            rate_limited_until = self._quote_provider_rate_limited_until(provider)
-            if rate_limited_until is not None:
-                logger.info(
-                    "arbitrage quote provider %s is rate limited until %s; trying next provider",
-                    provider,
-                    rate_limited_until.isoformat(),
-                )
-                rate_limit_failures.append(f"{provider}:cooldown")
-                continue
-            try:
-                return await self._quote_with_provider(
-                    provider,
-                    client,
-                    chain_id,
-                    monitor,
-                    token_in,
-                    token_out,
-                    amount_in_raw,
-                )
-            except QuoteRateLimitedError as exc:
-                retry_after = exc.retry_after_seconds or QUOTE_PROVIDER_COOLDOWN_SECONDS
-                rate_limited_until = self._mark_quote_provider_rate_limited_for(
-                    provider,
-                    retry_after,
-                )
-                logger.warning(
-                    "arbitrage quote provider %s is rate limited until %s; trying next provider",
-                    provider,
-                    rate_limited_until.isoformat(),
-                )
-                rate_limit_failures.append(f"{provider}:retry_after={retry_after:.0f}s")
-                continue
-            except QuoteRouteUnavailableError as exc:
-                logger.info(
-                    "arbitrage quote provider %s route unavailable; trying next provider: %s",
-                    provider,
-                    exc,
-                )
-                route_failures.append(f"{provider}:{exc}")
-                continue
-
-        if route_failures:
-            raise QuoteRouteUnavailableError("; ".join(route_failures))
-        raise QuoteRateLimitedError(
-            "all quote providers are rate limited: " + "; ".join(rate_limit_failures)
+        return await self._quote_with_provider(
+            quote_provider,
+            client,
+            chain_id,
+            monitor,
+            token_in,
+            token_out,
+            amount_in_raw,
         )
 
     async def _quote_with_provider(
@@ -975,6 +1019,7 @@ class ArbitrageCollector(BaseCollector):
         token_in: str,
         token_out: str,
         amount_in_raw: int,
+        quote_provider: str = PENDLESWAP_PROVIDER,
     ) -> SwapQuote:
         if token_in.lower() == token_out.lower():
             return SwapQuote(
@@ -985,7 +1030,15 @@ class ArbitrageCollector(BaseCollector):
                 token_out=token_out.lower(),
                 method="identity",
             )
-        return await self._quote(client, chain_id, monitor, token_in, token_out, amount_in_raw)
+        return await self._quote(
+            client,
+            chain_id,
+            monitor,
+            token_in,
+            token_out,
+            amount_in_raw,
+            quote_provider=quote_provider,
+        )
 
     async def _quote_cached(
         self,
@@ -998,6 +1051,7 @@ class ArbitrageCollector(BaseCollector):
         quote_cache: QuoteCache | None,
         *,
         allow_reverse_fallback: bool = False,
+        quote_provider: str = PENDLESWAP_PROVIDER,
     ) -> SwapQuote:
         key = (
             chain_id,
@@ -1006,7 +1060,7 @@ class ArbitrageCollector(BaseCollector):
             amount_in_raw,
             monitor.slippage_bps,
             monitor.receiver_address.lower(),
-            QUOTE_PROVIDERS,
+            quote_provider,
         )
         if quote_cache is not None and key in quote_cache:
             return quote_cache[key]
@@ -1018,6 +1072,7 @@ class ArbitrageCollector(BaseCollector):
                 token_in,
                 token_out,
                 amount_in_raw,
+                quote_provider=quote_provider,
             )
         except (QuoteRouteUnavailableError, httpx.HTTPStatusError) as exc:
             response = exc.response if isinstance(exc, httpx.HTTPStatusError) else None
@@ -1035,6 +1090,7 @@ class ArbitrageCollector(BaseCollector):
                 amount_in_raw,
                 quote_cache,
                 failed_status_code,
+                quote_provider,
             )
         if quote_cache is not None:
             quote_cache[key] = quote
@@ -1050,6 +1106,7 @@ class ArbitrageCollector(BaseCollector):
         amount_in_raw: int,
         quote_cache: QuoteCache | None,
         failed_status_code: int,
+        quote_provider: str,
     ) -> SwapQuote:
         reverse_amount_in_raw = amount_in_raw
         token_in_decimals = self._token_decimals(token_in)
@@ -1068,6 +1125,7 @@ class ArbitrageCollector(BaseCollector):
             token_in,
             reverse_amount_in_raw,
             quote_cache,
+            quote_provider=quote_provider,
         )
         if reverse_quote.amount_out_raw <= 0:
             raise ValueError("reverse route output is zero")
@@ -1315,10 +1373,6 @@ class ArbitrageCollector(BaseCollector):
             )
             return False
 
-        latest_deviation_pct = abs(latest.value)
-        deviation_triggered = (
-            latest_deviation_pct >= self.settings.arbitrage_curve_gate_min_deviation_pct
-        )
         change_window_started_at = now - timedelta(
             seconds=self.settings.arbitrage_curve_gate_change_window_seconds
         )
@@ -1330,7 +1384,7 @@ class ArbitrageCollector(BaseCollector):
         change_pct = max(window_values) - min(window_values) if len(window_values) > 1 else 0.0
         change_triggered = change_pct >= self.settings.arbitrage_curve_gate_min_change_pct
 
-        if deviation_triggered or change_triggered:
+        if change_triggered:
             logger.info(
                 "arbitrage collector entering path calculation: "
                 "curve_nav_deviation=%.4f%% change=%.4f%% window=%ss",
@@ -1342,10 +1396,8 @@ class ArbitrageCollector(BaseCollector):
 
         logger.info(
             "arbitrage collector skipped path calculation because Curve/NAV is quiet: "
-            "deviation=%.4f%% min_deviation=%.4f%% change=%.4f%% min_change=%.4f%% "
-            "window=%ss",
+            "deviation=%.4f%% change=%.4f%% min_change=%.4f%% window=%ss",
             latest.value,
-            self.settings.arbitrage_curve_gate_min_deviation_pct,
             change_pct,
             self.settings.arbitrage_curve_gate_min_change_pct,
             self.settings.arbitrage_curve_gate_change_window_seconds,
