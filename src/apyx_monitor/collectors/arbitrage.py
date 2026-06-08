@@ -13,30 +13,51 @@ from sqlmodel import Session, desc, select
 from ..config import ArbitrageMonitorDefinition, AssetCatalog, AssetDefinition, Settings
 from ..db import engine
 from ..models import MetricSnapshot
-from .base import BaseCollector, MetricPoint
 from . import pendle_rate_limit
+from .base import BaseCollector, MetricPoint
 
 PENDLE_SDK_BASE_URL = "https://api-v2.pendle.finance/core/v3/sdk"
+JUMPER_QUOTE_URL = "https://li.quest/v1/quote"
+VELORA_PRICE_URL = "https://api.paraswap.io/prices"
 ARBITRAGE_ENTITY_ID = "arb-apyusd-apxusd-crosschain"
 BUY_SOURCE_SELL_TARGET = "buy-source-sell-target"
 BUY_TARGET_SELL_SOURCE = "buy-target-sell-source"
 QUOTE_THROTTLE_SECONDS = 4.0
 CURVE_NAV_ENTITY_ID = "curve-apyusd-apxusd"
 CURVE_NAV_DEVIATION_METRIC = "curve_rate_vs_nav_deviation_pct"
+PENDLESWAP_PROVIDER = "pendleswap"
+JUMPER_PROVIDER = "jumper"
+VELORA_PROVIDER = "velora"
+QUOTE_PROVIDERS = (PENDLESWAP_PROVIDER, JUMPER_PROVIDER, VELORA_PROVIDER)
+QUOTE_PROVIDER_COOLDOWN_SECONDS = 600.0
 
 logger = logging.getLogger(__name__)
 
 
-class PendleSwapRateLimitedError(RuntimeError):
+class QuoteRateLimitedError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str | None = None,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.provider = provider
+        self.retry_after_seconds = retry_after_seconds
+
+
+class QuoteRouteUnavailableError(RuntimeError):
     pass
 
 
-class PendleSwapRouteUnavailableError(RuntimeError):
-    pass
-
-
+PendleSwapRateLimitedError = QuoteRateLimitedError
+PendleSwapRouteUnavailableError = QuoteRouteUnavailableError
 VeloraRateLimitedError = PendleSwapRateLimitedError
 VeloraRouteUnavailableError = PendleSwapRouteUnavailableError
+
+
+_quote_provider_cooldowns: dict[str, datetime] = {}
 
 
 @dataclass(frozen=True)
@@ -113,13 +134,6 @@ class ArbitrageCollector(BaseCollector):
 
     async def collect(self) -> list[MetricPoint]:
         now = datetime.now(timezone.utc)
-        if pendle_rate_limit.is_rate_limited(now):
-            logger.warning(
-                "arbitrage collector skipped because PendleSwap Hosted SDK is rate limited "
-                "until %s",
-                pendle_rate_limit.rate_limited_until().isoformat(),
-            )
-            return []
 
         asset_map = {asset.asset_id: asset for asset in self.catalog.assets}
         chain_id_map = {chain.chain: chain.chain_id for chain in self.catalog.chains}
@@ -215,23 +229,23 @@ class ArbitrageCollector(BaseCollector):
                             float(notional_usd),
                             quote_cache,
                         )
-                    except PendleSwapRateLimitedError:
-                        rate_limited_until = pendle_rate_limit.mark_rate_limited_for(
-                            pendle_rate_limit.RATE_LIMIT_COOLDOWN_SECONDS
-                        )
+                    except QuoteRateLimitedError as exc:
                         logger.warning(
-                            "arbitrage collector entering PendleSwap Hosted SDK rate-limit "
-                            "cooldown until %s",
-                            rate_limited_until.isoformat(),
+                            "arbitrage collector skipped because all quote providers are "
+                            "rate limited: monitor=%s strategy=%s notional=%s error=%s",
+                            monitor.monitor_id,
+                            strategy_id,
+                            notional_usd,
+                            exc,
                         )
                         return self._samples_to_metrics(
                             samples,
                             best_candidates=list(self._latest_samples.values()),
                             best_recorded_at=now,
                         )
-                    except PendleSwapRouteUnavailableError as exc:
+                    except QuoteRouteUnavailableError as exc:
                         logger.warning(
-                            "arbitrage sample skipped because PendleSwap route is unavailable: "
+                            "arbitrage sample skipped because quote route is unavailable: "
                             "monitor=%s strategy=%s notional=%s error=%s",
                             monitor.monitor_id,
                             strategy_id,
@@ -702,6 +716,105 @@ class ArbitrageCollector(BaseCollector):
         token_out: str,
         amount_in_raw: int,
     ) -> SwapQuote:
+        route_failures: list[str] = []
+        rate_limit_failures: list[str] = []
+
+        for provider in QUOTE_PROVIDERS:
+            rate_limited_until = self._quote_provider_rate_limited_until(provider)
+            if rate_limited_until is not None:
+                logger.info(
+                    "arbitrage quote provider %s is rate limited until %s; trying next provider",
+                    provider,
+                    rate_limited_until.isoformat(),
+                )
+                rate_limit_failures.append(f"{provider}:cooldown")
+                continue
+            try:
+                return await self._quote_with_provider(
+                    provider,
+                    client,
+                    chain_id,
+                    monitor,
+                    token_in,
+                    token_out,
+                    amount_in_raw,
+                )
+            except QuoteRateLimitedError as exc:
+                retry_after = exc.retry_after_seconds or QUOTE_PROVIDER_COOLDOWN_SECONDS
+                rate_limited_until = self._mark_quote_provider_rate_limited_for(
+                    provider,
+                    retry_after,
+                )
+                logger.warning(
+                    "arbitrage quote provider %s is rate limited until %s; trying next provider",
+                    provider,
+                    rate_limited_until.isoformat(),
+                )
+                rate_limit_failures.append(f"{provider}:retry_after={retry_after:.0f}s")
+                continue
+            except QuoteRouteUnavailableError as exc:
+                logger.info(
+                    "arbitrage quote provider %s route unavailable; trying next provider: %s",
+                    provider,
+                    exc,
+                )
+                route_failures.append(f"{provider}:{exc}")
+                continue
+
+        if route_failures:
+            raise QuoteRouteUnavailableError("; ".join(route_failures))
+        raise QuoteRateLimitedError(
+            "all quote providers are rate limited: " + "; ".join(rate_limit_failures)
+        )
+
+    async def _quote_with_provider(
+        self,
+        provider: str,
+        client: httpx.AsyncClient,
+        chain_id: int,
+        monitor: ArbitrageMonitorDefinition,
+        token_in: str,
+        token_out: str,
+        amount_in_raw: int,
+    ) -> SwapQuote:
+        if provider == PENDLESWAP_PROVIDER:
+            return await self._quote_pendleswap(
+                client,
+                chain_id,
+                monitor,
+                token_in,
+                token_out,
+                amount_in_raw,
+            )
+        if provider == JUMPER_PROVIDER:
+            return await self._quote_jumper(
+                client,
+                chain_id,
+                monitor,
+                token_in,
+                token_out,
+                amount_in_raw,
+            )
+        if provider == VELORA_PROVIDER:
+            return await self._quote_velora(
+                client,
+                chain_id,
+                monitor,
+                token_in,
+                token_out,
+                amount_in_raw,
+            )
+        raise ValueError(f"unknown quote provider: {provider}")
+
+    async def _quote_pendleswap(
+        self,
+        client: httpx.AsyncClient,
+        chain_id: int,
+        monitor: ArbitrageMonitorDefinition,
+        token_in: str,
+        token_out: str,
+        amount_in_raw: int,
+    ) -> SwapQuote:
         payload = {
             "receiver": monitor.receiver_address,
             "slippage": monitor.slippage_bps / 10000,
@@ -721,11 +834,13 @@ class ArbitrageCollector(BaseCollector):
                 self._retry_after_seconds(response)
                 or pendle_rate_limit.RATE_LIMIT_COOLDOWN_SECONDS
             )
-            raise PendleSwapRateLimitedError(
-                f"PendleSwap Hosted SDK rate limited; retry after {retry_after:.0f}s"
+            raise QuoteRateLimitedError(
+                f"PendleSwap Hosted SDK rate limited; retry after {retry_after:.0f}s",
+                provider=PENDLESWAP_PROVIDER,
+                retry_after_seconds=retry_after,
             )
         if self._is_route_unavailable(response):
-            raise PendleSwapRouteUnavailableError(
+            raise QuoteRouteUnavailableError(
                 f"PendleSwap route unavailable: status={response.status_code} "
                 f"chain={chain_id} token_in={token_in} token_out={token_out}"
             )
@@ -743,6 +858,113 @@ class ArbitrageCollector(BaseCollector):
             token_out=token_out.lower(),
             method="pendleswap_sdk",
             routing=self._extract_pendleswap_routing(payload),
+        )
+
+    async def _quote_jumper(
+        self,
+        client: httpx.AsyncClient,
+        chain_id: int,
+        monitor: ArbitrageMonitorDefinition,
+        token_in: str,
+        token_out: str,
+        amount_in_raw: int,
+    ) -> SwapQuote:
+        params = {
+            "fromChain": str(chain_id),
+            "toChain": str(chain_id),
+            "fromToken": token_in,
+            "toToken": token_out,
+            "fromAmount": str(amount_in_raw),
+            "fromAddress": monitor.receiver_address,
+            "toAddress": monitor.receiver_address,
+            "slippage": str(monitor.slippage_bps / 10000),
+        }
+
+        await asyncio.sleep(QUOTE_THROTTLE_SECONDS)
+        response = await client.get(JUMPER_QUOTE_URL, params=params)
+        if response.status_code == 429:
+            retry_after = self._retry_after_seconds(response) or QUOTE_PROVIDER_COOLDOWN_SECONDS
+            raise QuoteRateLimitedError(
+                f"Jumper quote API rate limited; retry after {retry_after:.0f}s",
+                provider=JUMPER_PROVIDER,
+                retry_after_seconds=retry_after,
+            )
+        if self._is_route_unavailable(response):
+            raise QuoteRouteUnavailableError(
+                f"Jumper route unavailable: status={response.status_code} "
+                f"chain={chain_id} token_in={token_in} token_out={token_out}"
+            )
+        response.raise_for_status()
+        payload = response.json()
+        estimate = payload.get("estimate") or {}
+        amount_out = estimate.get("toAmount") or payload.get("toAmount")
+        min_out = estimate.get("toAmountMin") or payload.get("toAmountMin")
+        if amount_out is None:
+            raise ValueError("Jumper route output not found")
+
+        return SwapQuote(
+            amount_in_raw=amount_in_raw,
+            amount_out_raw=int(amount_out),
+            min_out_raw=int(min_out) if min_out is not None else None,
+            token_in=token_in.lower(),
+            token_out=token_out.lower(),
+            method="jumper_lifi",
+            routing=self._extract_jumper_routing(payload),
+        )
+
+    async def _quote_velora(
+        self,
+        client: httpx.AsyncClient,
+        chain_id: int,
+        monitor: ArbitrageMonitorDefinition,
+        token_in: str,
+        token_out: str,
+        amount_in_raw: int,
+    ) -> SwapQuote:
+        params: dict[str, str] = {
+            "srcToken": token_in,
+            "destToken": token_out,
+            "amount": str(amount_in_raw),
+            "side": "SELL",
+            "network": str(chain_id),
+            "version": "6.2",
+        }
+        src_decimals = self._token_decimals(token_in)
+        dest_decimals = self._token_decimals(token_out)
+        if src_decimals is not None:
+            params["srcDecimals"] = str(src_decimals)
+        if dest_decimals is not None:
+            params["destDecimals"] = str(dest_decimals)
+
+        await asyncio.sleep(QUOTE_THROTTLE_SECONDS)
+        response = await client.get(VELORA_PRICE_URL, params=params)
+        if response.status_code == 429:
+            retry_after = self._retry_after_seconds(response) or QUOTE_PROVIDER_COOLDOWN_SECONDS
+            raise QuoteRateLimitedError(
+                f"Velora price API rate limited; retry after {retry_after:.0f}s",
+                provider=VELORA_PROVIDER,
+                retry_after_seconds=retry_after,
+            )
+        if self._is_route_unavailable(response):
+            raise QuoteRouteUnavailableError(
+                f"Velora route unavailable: status={response.status_code} "
+                f"chain={chain_id} token_in={token_in} token_out={token_out}"
+            )
+        response.raise_for_status()
+        payload = response.json()
+        price_route = payload.get("priceRoute") or payload
+        amount_out = price_route.get("destAmount") or payload.get("destAmount")
+        if amount_out is None:
+            raise ValueError("Velora route output not found")
+
+        return SwapQuote(
+            amount_in_raw=amount_in_raw,
+            amount_out_raw=int(amount_out),
+            min_out_raw=None,
+            token_in=token_in.lower(),
+            token_out=token_out.lower(),
+            method="velora_market_6.2",
+            routing=self._extract_velora_routing(payload),
         )
 
     async def _quote_conversion(
@@ -784,7 +1006,7 @@ class ArbitrageCollector(BaseCollector):
             amount_in_raw,
             monitor.slippage_bps,
             monitor.receiver_address.lower(),
-            "pendleswap_sdk",
+            QUOTE_PROVIDERS,
         )
         if quote_cache is not None and key in quote_cache:
             return quote_cache[key]
@@ -797,7 +1019,7 @@ class ArbitrageCollector(BaseCollector):
                 token_out,
                 amount_in_raw,
             )
-        except (PendleSwapRouteUnavailableError, httpx.HTTPStatusError) as exc:
+        except (QuoteRouteUnavailableError, httpx.HTTPStatusError) as exc:
             response = exc.response if isinstance(exc, httpx.HTTPStatusError) else None
             if response is not None and not self._can_use_reverse_fallback(response):
                 raise
@@ -848,11 +1070,11 @@ class ArbitrageCollector(BaseCollector):
             quote_cache,
         )
         if reverse_quote.amount_out_raw <= 0:
-            raise ValueError("PendleSwap reverse route output is zero")
+            raise ValueError("reverse route output is zero")
 
         amount_out_raw = amount_in_raw * reverse_quote.amount_in_raw // reverse_quote.amount_out_raw
         logger.warning(
-            "PendleSwap quote %s -> %s on chain %s returned %s; using reverse quote fallback",
+            "quote %s -> %s on chain %s returned %s; using reverse quote fallback",
             token_in,
             token_out,
             chain_id,
@@ -932,6 +1154,30 @@ class ArbitrageCollector(BaseCollector):
     def _is_route_unavailable(response: httpx.Response) -> bool:
         return response.status_code in {400, 404, 422}
 
+    @staticmethod
+    def _quote_provider_rate_limited_until(provider: str) -> datetime | None:
+        now = datetime.now(timezone.utc)
+        if provider == PENDLESWAP_PROVIDER:
+            rate_limited_until = pendle_rate_limit.rate_limited_until()
+            if rate_limited_until is not None and rate_limited_until > now:
+                return rate_limited_until
+            return None
+
+        rate_limited_until = _quote_provider_cooldowns.get(provider)
+        if rate_limited_until is not None and rate_limited_until > now:
+            return rate_limited_until
+        if rate_limited_until is not None:
+            _quote_provider_cooldowns.pop(provider, None)
+        return None
+
+    @staticmethod
+    def _mark_quote_provider_rate_limited_for(provider: str, seconds: float) -> datetime:
+        if provider == PENDLESWAP_PROVIDER:
+            return pendle_rate_limit.mark_rate_limited_for(seconds)
+        rate_limited_until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+        _quote_provider_cooldowns[provider] = rate_limited_until
+        return rate_limited_until
+
     def _token_decimals(self, token_address: str) -> int | None:
         return self._asset_decimals_by_address.get(token_address.lower())
 
@@ -979,6 +1225,34 @@ class ArbitrageCollector(BaseCollector):
             "routes": payload.get("routes"),
             "gas": payload.get("gas") or payload.get("gasUsed"),
             "gas_usd": payload.get("gasUsd") or payload.get("gasUSD"),
+        }
+
+    @staticmethod
+    def _extract_jumper_routing(payload: dict[str, Any]) -> dict[str, Any]:
+        estimate = payload.get("estimate") or {}
+        return {
+            "provider": "jumper",
+            "mode": "lifi_quote",
+            "tool": payload.get("tool"),
+            "included_steps": payload.get("includedSteps"),
+            "transaction_request": payload.get("transactionRequest"),
+            "approval_address": estimate.get("approvalAddress"),
+            "gas_costs": estimate.get("gasCosts"),
+            "fee_costs": estimate.get("feeCosts"),
+        }
+
+    @staticmethod
+    def _extract_velora_routing(payload: dict[str, Any]) -> dict[str, Any]:
+        price_route = payload.get("priceRoute") or payload
+        return {
+            "provider": "velora",
+            "mode": "paraswap_price",
+            "version": price_route.get("version"),
+            "contract_method": price_route.get("contractMethod"),
+            "best_route": price_route.get("bestRoute"),
+            "src_usd": price_route.get("srcUSD"),
+            "dest_usd": price_route.get("destUSD"),
+            "gas_cost_usd": price_route.get("gasCostUSD"),
         }
 
     @staticmethod

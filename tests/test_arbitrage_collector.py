@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
+from apyx_monitor.collectors import arbitrage as arbitrage_module
+from apyx_monitor.collectors import pendle_rate_limit
 from apyx_monitor.collectors.arbitrage import (
     BUY_SOURCE_SELL_TARGET,
     BUY_TARGET_SELL_SOURCE,
@@ -188,6 +190,20 @@ def test_settlement_sell_uses_reverse_quote_fallback_when_pendle_returns_500():
 
 def test_quote_uses_pendleswap_sdk_convert_api(monkeypatch):
     asyncio.run(_run_quote_uses_pendleswap_sdk_convert_api_test(monkeypatch))
+
+
+def test_quote_falls_back_to_jumper_when_pendleswap_is_rate_limited(monkeypatch):
+    asyncio.run(_run_quote_falls_back_to_jumper_when_pendleswap_is_rate_limited_test(monkeypatch))
+
+
+def test_quote_falls_back_to_velora_when_pendleswap_and_jumper_are_rate_limited(
+    monkeypatch,
+):
+    asyncio.run(
+        _run_quote_falls_back_to_velora_when_pendleswap_and_jumper_are_rate_limited_test(
+            monkeypatch
+        )
+    )
 
 
 def test_curve_nav_gate_skips_path_calculation_when_deviation_is_quiet(monkeypatch):
@@ -816,6 +832,138 @@ async def _run_quote_uses_pendleswap_sdk_convert_api_test(monkeypatch):
     assert sleep_calls
 
 
+async def _run_quote_falls_back_to_jumper_when_pendleswap_is_rate_limited_test(monkeypatch):
+    pendle_rate_limit.clear_rate_limit()
+    arbitrage_module._quote_provider_cooldowns.clear()
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("apyx_monitor.collectors.arbitrage.asyncio.sleep", fake_sleep)
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict]] = []
+
+        async def post(self, url: str, json: dict) -> httpx.Response:
+            self.calls.append(("POST", url, json))
+            request = httpx.Request("POST", url)
+            return httpx.Response(429, request=request, headers={"retry-after": "1"})
+
+        async def get(self, url: str, params: dict) -> httpx.Response:
+            self.calls.append(("GET", url, params))
+            request = httpx.Request("GET", url)
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "estimate": {
+                        "toAmount": "1900000000000000000",
+                        "toAmountMin": "1800000000000000000",
+                        "approvalAddress": "0xapproval",
+                    },
+                    "tool": "jumper",
+                },
+            )
+
+    monitor = ArbitrageMonitorDefinition(
+        monitor_id="arb-ethereum-base",
+        label="Ethereum <-> Base",
+        source_chain="ethereum",
+        target_chain="base",
+        funding_asset_id="usdc-ethereum",
+        start_asset_id="apxusd-ethereum",
+        intermediate_asset_id="apyusd-ethereum",
+        final_asset_id="apxusd-base",
+    )
+    collector = ArbitrageCollector(Settings(), _quote_catalog(monitor))
+    client = FakeClient()
+
+    quote = await collector._quote(client, 1, monitor, "eth-apx", "eth-apy", 10**18)
+
+    assert [call[0] for call in client.calls] == ["POST", "GET"]
+    assert client.calls[1][1] == "https://li.quest/v1/quote"
+    assert client.calls[1][2]["fromChain"] == "1"
+    assert client.calls[1][2]["toChain"] == "1"
+    assert client.calls[1][2]["fromToken"] == "eth-apx"
+    assert client.calls[1][2]["toToken"] == "eth-apy"
+    assert quote.amount_out_raw == 1900000000000000000
+    assert quote.min_out_raw == 1800000000000000000
+    assert quote.method == "jumper_lifi"
+    assert quote.routing["provider"] == "jumper"
+    assert sleep_calls == [4.0, 4.0]
+    pendle_rate_limit.clear_rate_limit()
+    arbitrage_module._quote_provider_cooldowns.clear()
+
+
+async def _run_quote_falls_back_to_velora_when_pendleswap_and_jumper_are_rate_limited_test(
+    monkeypatch,
+):
+    pendle_rate_limit.clear_rate_limit()
+    arbitrage_module._quote_provider_cooldowns.clear()
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("apyx_monitor.collectors.arbitrage.asyncio.sleep", fake_sleep)
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict]] = []
+
+        async def post(self, url: str, json: dict) -> httpx.Response:
+            self.calls.append(("POST", url, json))
+            request = httpx.Request("POST", url)
+            return httpx.Response(429, request=request, headers={"retry-after": "1"})
+
+        async def get(self, url: str, params: dict) -> httpx.Response:
+            self.calls.append(("GET", url, params))
+            request = httpx.Request("GET", url)
+            if url == "https://li.quest/v1/quote":
+                return httpx.Response(429, request=request, headers={"retry-after": "1"})
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "priceRoute": {
+                        "destAmount": "1700000000000000000",
+                        "version": "6.2",
+                        "bestRoute": [{"percent": 100}],
+                    }
+                },
+            )
+
+    monitor = ArbitrageMonitorDefinition(
+        monitor_id="arb-ethereum-base",
+        label="Ethereum <-> Base",
+        source_chain="ethereum",
+        target_chain="base",
+        funding_asset_id="usdc-ethereum",
+        start_asset_id="apxusd-ethereum",
+        intermediate_asset_id="apyusd-ethereum",
+        final_asset_id="apxusd-base",
+    )
+    collector = ArbitrageCollector(Settings(), _quote_catalog(monitor))
+    client = FakeClient()
+
+    quote = await collector._quote(client, 1, monitor, "eth-apx", "eth-apy", 10**18)
+
+    assert [call[0] for call in client.calls] == ["POST", "GET", "GET"]
+    assert client.calls[2][1] == "https://api.paraswap.io/prices"
+    assert client.calls[2][2]["srcToken"] == "eth-apx"
+    assert client.calls[2][2]["destToken"] == "eth-apy"
+    assert client.calls[2][2]["side"] == "SELL"
+    assert client.calls[2][2]["network"] == "1"
+    assert quote.amount_out_raw == 1700000000000000000
+    assert quote.method == "velora_market_6.2"
+    assert quote.routing["provider"] == "velora"
+    assert sleep_calls == [4.0, 4.0, 4.0]
+    pendle_rate_limit.clear_rate_limit()
+    arbitrage_module._quote_provider_cooldowns.clear()
+
+
 def _best_profit_metric(metrics):
     return next(
         metric
@@ -832,4 +980,19 @@ def _minimal_catalog() -> AssetCatalog:
         pendle_markets=[],
         morpho_markets=[],
         arbitrage_monitors=[],
+    )
+
+
+def _quote_catalog(monitor: ArbitrageMonitorDefinition) -> AssetCatalog:
+    return AssetCatalog(
+        chains=[
+            ChainDefinition(chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url="")
+        ],
+        assets=[
+            _asset("apxusd-ethereum", "apxusd", "apxUSD", "ethereum", "eth-apx"),
+            _asset("apyusd-ethereum", "apyusd", "apyUSD", "ethereum", "eth-apy"),
+        ],
+        pendle_markets=[],
+        morpho_markets=[],
+        arbitrage_monitors=[monitor],
     )
