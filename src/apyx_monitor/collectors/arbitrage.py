@@ -333,11 +333,7 @@ class ArbitrageCollector(BaseCollector):
         )
         entry_apxusd_amount = 0.0
         bought_apyusd_amount = entry_leg.amount_out_raw / 10 ** settlement_apyusd.decimals
-        remote_apyusd_raw = self._scale_raw_amount(
-            entry_leg.amount_out_raw,
-            settlement_apyusd.decimals,
-            remote_apyusd.decimals,
-        )
+        remote_apyusd_raw = entry_leg.amount_out_raw
         remote_apyusd_amount = remote_apyusd_raw / 10 ** remote_apyusd.decimals
         first_leg = await self._quote_cached(
             client,
@@ -349,16 +345,11 @@ class ArbitrageCollector(BaseCollector):
             quote_cache,
         )
         sold_apxusd_amount = first_leg.amount_out_raw / 10 ** remote_apxusd.decimals
-        final_raw = self._scale_raw_amount(
-            first_leg.amount_out_raw,
-            remote_apxusd.decimals,
-            settlement_apxusd.decimals,
-        )
+        final_raw = first_leg.amount_out_raw
         final_apxusd_amount = final_raw / 10 ** settlement_apxusd.decimals
         second_leg = self._bridge_quote(
             remote_apxusd.contract_address,
             settlement_apxusd.contract_address,
-            first_leg.amount_out_raw,
             final_raw,
         )
         exit_leg = await self._quote_cached(
@@ -503,11 +494,7 @@ class ArbitrageCollector(BaseCollector):
             quote_cache,
         )
         entry_apxusd_amount = entry_leg.amount_out_raw / 10 ** settlement_apxusd.decimals
-        remote_apxusd_raw = self._scale_raw_amount(
-            entry_leg.amount_out_raw,
-            settlement_apxusd.decimals,
-            remote_apxusd.decimals,
-        )
+        remote_apxusd_raw = entry_leg.amount_out_raw
         remote_start_amount = remote_apxusd_raw / 10 ** remote_apxusd.decimals
 
         first_leg = await self._quote_cached(
@@ -521,16 +508,11 @@ class ArbitrageCollector(BaseCollector):
             allow_reverse_fallback=True,
         )
         bought_apyusd_amount = first_leg.amount_out_raw / 10 ** remote_apyusd.decimals
-        settlement_apyusd_raw = self._scale_raw_amount(
-            first_leg.amount_out_raw,
-            remote_apyusd.decimals,
-            settlement_apyusd.decimals,
-        )
+        settlement_apyusd_raw = first_leg.amount_out_raw
         settlement_apyusd_amount = settlement_apyusd_raw / 10 ** settlement_apyusd.decimals
         second_leg = self._bridge_quote(
             remote_apyusd.contract_address,
             settlement_apyusd.contract_address,
-            first_leg.amount_out_raw,
             settlement_apyusd_raw,
         )
         sold_apxusd_amount = entry_apxusd_amount
@@ -916,19 +898,18 @@ class ArbitrageCollector(BaseCollector):
     def _bridge_quote(
         token_in: str,
         token_out: str,
-        amount_in_raw: int,
-        amount_out_raw: int,
+        amount_raw: int,
     ) -> SwapQuote:
         return SwapQuote(
-            amount_in_raw=amount_in_raw,
-            amount_out_raw=amount_out_raw,
-            min_out_raw=amount_out_raw,
+            amount_in_raw=amount_raw,
+            amount_out_raw=amount_raw,
+            min_out_raw=amount_raw,
             token_in=token_in.lower(),
             token_out=token_out.lower(),
-            method="bridge_scale",
+            method="bridge_identity",
             routing={
-                "provider": "bridge_scale",
-                "source": "decimal_scale",
+                "provider": "bridge_identity",
+                "source": "token_amount_unchanged",
             },
         )
 
