@@ -15,7 +15,7 @@ from ..db import engine
 from ..models import MetricSnapshot
 from .base import BaseCollector, MetricPoint
 
-VELORA_MARKET_API_BASE_URL = "https://api.paraswap.io"
+PENDLE_SDK_BASE_URL = "https://api-v2.pendle.finance/core/v3/sdk"
 ARBITRAGE_ENTITY_ID = "arb-apyusd-apxusd-crosschain"
 BUY_SOURCE_SELL_TARGET = "buy-source-sell-target"
 BUY_TARGET_SELL_SOURCE = "buy-target-sell-source"
@@ -28,12 +28,16 @@ logger = logging.getLogger(__name__)
 _rate_limited_until: datetime | None = None
 
 
-class VeloraRateLimitedError(RuntimeError):
+class PendleSwapRateLimitedError(RuntimeError):
     pass
 
 
-class VeloraRouteUnavailableError(RuntimeError):
+class PendleSwapRouteUnavailableError(RuntimeError):
     pass
+
+
+VeloraRateLimitedError = PendleSwapRateLimitedError
+VeloraRouteUnavailableError = PendleSwapRouteUnavailableError
 
 
 @dataclass(frozen=True)
@@ -113,7 +117,8 @@ class ArbitrageCollector(BaseCollector):
         now = datetime.now(timezone.utc)
         if _rate_limited_until is not None and now < _rate_limited_until:
             logger.warning(
-                "arbitrage collector skipped because Velora Market API is rate limited until %s",
+                "arbitrage collector skipped because PendleSwap Hosted SDK is rate limited "
+                "until %s",
                 _rate_limited_until.isoformat(),
             )
             return []
@@ -212,12 +217,12 @@ class ArbitrageCollector(BaseCollector):
                             float(notional_usd),
                             quote_cache,
                         )
-                    except VeloraRateLimitedError:
+                    except PendleSwapRateLimitedError:
                         _rate_limited_until = datetime.now(timezone.utc) + timedelta(
                             seconds=RATE_LIMIT_COOLDOWN_SECONDS
                         )
                         logger.warning(
-                            "arbitrage collector entering Velora Market API rate-limit "
+                            "arbitrage collector entering PendleSwap Hosted SDK rate-limit "
                             "cooldown until %s",
                             _rate_limited_until.isoformat(),
                         )
@@ -226,9 +231,9 @@ class ArbitrageCollector(BaseCollector):
                             best_candidates=list(self._latest_samples.values()),
                             best_recorded_at=now,
                         )
-                    except VeloraRouteUnavailableError as exc:
+                    except PendleSwapRouteUnavailableError as exc:
                         logger.warning(
-                            "arbitrage sample skipped because Velora route is unavailable: "
+                            "arbitrage sample skipped because PendleSwap route is unavailable: "
                             "monitor=%s strategy=%s notional=%s error=%s",
                             monitor.monitor_id,
                             strategy_id,
@@ -741,39 +746,35 @@ class ArbitrageCollector(BaseCollector):
         token_out: str,
         amount_in_raw: int,
     ) -> SwapQuote:
-        params = {
-            "srcToken": token_in,
-            "destToken": token_out,
-            "amount": str(amount_in_raw),
-            "side": "SELL",
-            "network": chain_id,
-            "version": "6.2",
+        payload = {
+            "receiver": monitor.receiver_address,
+            "slippage": monitor.slippage_bps / 10000,
+            "enableAggregator": bool(monitor.aggregators),
+            "aggregators": monitor.aggregators,
+            "inputs": [{"token": token_in, "amount": str(amount_in_raw)}],
+            "outputs": [token_out],
+            "redeemRewards": False,
+            "needScale": False,
+            "useLimitOrder": True,
         }
-        src_decimals = self._token_decimals(token_in)
-        dest_decimals = self._token_decimals(token_out)
-        if src_decimals is not None:
-            params["srcDecimals"] = src_decimals
-        if dest_decimals is not None:
-            params["destDecimals"] = dest_decimals
 
         await asyncio.sleep(QUOTE_THROTTLE_SECONDS)
-        response = await client.get(f"{VELORA_MARKET_API_BASE_URL}/prices", params=params)
+        response = await client.post(f"{PENDLE_SDK_BASE_URL}/{chain_id}/convert", json=payload)
         if response.status_code == 429:
             retry_after = self._retry_after_seconds(response) or RATE_LIMIT_COOLDOWN_SECONDS
-            raise VeloraRateLimitedError(
-                f"Velora Market API rate limited; retry after {retry_after:.0f}s"
+            raise PendleSwapRateLimitedError(
+                f"PendleSwap Hosted SDK rate limited; retry after {retry_after:.0f}s"
             )
         if self._is_route_unavailable(response):
-            raise VeloraRouteUnavailableError(
-                f"Velora route unavailable: status={response.status_code} "
+            raise PendleSwapRouteUnavailableError(
+                f"PendleSwap route unavailable: status={response.status_code} "
                 f"chain={chain_id} token_in={token_in} token_out={token_out}"
             )
         response.raise_for_status()
         payload = response.json()
-        price_route = payload.get("priceRoute") or payload
-        dest_amount = price_route.get("destAmount")
+        dest_amount = self._extract_pendleswap_output_amount(payload, token_out)
         if dest_amount is None:
-            raise ValueError("Velora market route output not found")
+            raise ValueError("PendleSwap route output not found")
 
         return SwapQuote(
             amount_in_raw=amount_in_raw,
@@ -781,8 +782,8 @@ class ArbitrageCollector(BaseCollector):
             min_out_raw=None,
             token_in=token_in.lower(),
             token_out=token_out.lower(),
-            method=f"velora_market_{price_route.get('version') or '6.2'}",
-            routing=self._extract_velora_routing(price_route),
+            method="pendleswap_sdk",
+            routing=self._extract_pendleswap_routing(payload),
         )
 
     async def _quote_conversion(
@@ -824,7 +825,7 @@ class ArbitrageCollector(BaseCollector):
             amount_in_raw,
             monitor.slippage_bps,
             monitor.receiver_address.lower(),
-            "velora_market",
+            "pendleswap_sdk",
         )
         if quote_cache is not None and key in quote_cache:
             return quote_cache[key]
@@ -837,7 +838,7 @@ class ArbitrageCollector(BaseCollector):
                 token_out,
                 amount_in_raw,
             )
-        except (VeloraRouteUnavailableError, httpx.HTTPStatusError) as exc:
+        except (PendleSwapRouteUnavailableError, httpx.HTTPStatusError) as exc:
             response = exc.response if isinstance(exc, httpx.HTTPStatusError) else None
             if response is not None and not self._can_use_reverse_fallback(response):
                 raise
@@ -879,11 +880,11 @@ class ArbitrageCollector(BaseCollector):
             quote_cache,
         )
         if reverse_quote.amount_out_raw <= 0:
-            raise ValueError("Velora reverse route output is zero")
+            raise ValueError("PendleSwap reverse route output is zero")
 
         amount_out_raw = amount_in_raw * reverse_quote.amount_in_raw // reverse_quote.amount_out_raw
         logger.warning(
-            "Velora quote %s -> %s on chain %s returned %s; using reverse quote fallback",
+            "PendleSwap quote %s -> %s on chain %s returned %s; using reverse quote fallback",
             token_in,
             token_out,
             chain_id,
@@ -948,51 +949,49 @@ class ArbitrageCollector(BaseCollector):
         return self._asset_decimals_by_address.get(token_address.lower())
 
     @staticmethod
-    def _extract_velora_routing(price_route: dict[str, Any]) -> dict[str, Any]:
+    def _extract_pendleswap_output_amount(payload: dict[str, Any], token_out: str) -> str | None:
+        token_out_lower = token_out.lower()
+        for container in (
+            payload,
+            payload.get("data") or {},
+            (payload.get("route") or {}),
+            *((payload.get("routes") or [])[:1]),
+        ):
+            outputs = container.get("outputs") or container.get("amountsOut") or []
+            if isinstance(outputs, dict):
+                for token, amount in outputs.items():
+                    if token.lower() == token_out_lower:
+                        return str(amount)
+            for output in outputs if isinstance(outputs, list) else []:
+                if not isinstance(output, dict):
+                    continue
+                token = (
+                    output.get("token")
+                    or output.get("address")
+                    or output.get("tokenOut")
+                    or output.get("asset")
+                )
+                amount = (
+                    output.get("amount")
+                    or output.get("amountOut")
+                    or output.get("netAmount")
+                    or output.get("rawAmount")
+                )
+                if token is not None and token.lower() == token_out_lower and amount is not None:
+                    return str(amount)
+        return None
+
+    @staticmethod
+    def _extract_pendleswap_routing(payload: dict[str, Any]) -> dict[str, Any]:
         return {
-            "provider": "velora",
-            "mode": "market",
-            "version": price_route.get("version"),
-            "network": price_route.get("network"),
-            "block_number": price_route.get("blockNumber"),
-            "side": price_route.get("side"),
-            "contract_method": price_route.get("contractMethod"),
-            "contract_address": price_route.get("contractAddress"),
-            "token_transfer_proxy": price_route.get("tokenTransferProxy"),
-            "gas_cost": price_route.get("gasCost"),
-            "gas_cost_usd": price_route.get("gasCostUSD"),
-            "src_usd": price_route.get("srcUSD"),
-            "dest_usd": price_route.get("destUSD"),
-            "dest_amount_after_fee": price_route.get("destAmountAfterFee"),
-            "partner_fee": price_route.get("partnerFee"),
-            "max_impact_reached": price_route.get("maxImpactReached"),
-            "best_route": [
-                {
-                    "percent": route.get("percent"),
-                    "swaps": [
-                        {
-                            "src_token": swap.get("srcToken"),
-                            "src_decimals": swap.get("srcDecimals"),
-                            "dest_token": swap.get("destToken"),
-                            "dest_decimals": swap.get("destDecimals"),
-                            "swap_exchanges": [
-                                {
-                                    "exchange": exchange.get("exchange"),
-                                    "src_amount": exchange.get("srcAmount"),
-                                    "dest_amount": exchange.get("destAmount"),
-                                    "percent": exchange.get("percent"),
-                                    "pool_addresses": exchange.get("poolAddresses") or [],
-                                    "pool_identifiers": exchange.get("poolIdentifiers") or [],
-                                    "data": exchange.get("data") or {},
-                                }
-                                for exchange in swap.get("swapExchanges") or []
-                            ],
-                        }
-                        for swap in route.get("swaps") or []
-                    ],
-                }
-                for route in price_route.get("bestRoute") or []
-            ],
+            "provider": "pendleswap",
+            "mode": "hosted_sdk_convert",
+            "tx": payload.get("tx"),
+            "data": payload.get("data"),
+            "route": payload.get("route"),
+            "routes": payload.get("routes"),
+            "gas": payload.get("gas") or payload.get("gasUsed"),
+            "gas_usd": payload.get("gasUsd") or payload.get("gasUSD"),
         }
 
     @staticmethod
@@ -1038,7 +1037,7 @@ class ArbitrageCollector(BaseCollector):
         snapshots = self._latest_curve_nav_deviation_snapshots(limit=10)
         if not snapshots:
             logger.info(
-                "arbitrage collector skipped Velora path calculation because Curve/NAV "
+                "arbitrage collector skipped path calculation because Curve/NAV "
                 "deviation is not available yet"
             )
             return False
@@ -1048,7 +1047,7 @@ class ArbitrageCollector(BaseCollector):
         age_seconds = (now - latest_recorded_at).total_seconds()
         if age_seconds > self.settings.arbitrage_curve_gate_max_age_seconds:
             logger.info(
-                "arbitrage collector skipped Velora path calculation because latest "
+                "arbitrage collector skipped path calculation because latest "
                 "Curve/NAV deviation is stale: age=%.0fs max_age=%ss",
                 age_seconds,
                 self.settings.arbitrage_curve_gate_max_age_seconds,
@@ -1072,7 +1071,7 @@ class ArbitrageCollector(BaseCollector):
 
         if deviation_triggered or change_triggered:
             logger.info(
-                "arbitrage collector entering Velora path calculation: "
+                "arbitrage collector entering path calculation: "
                 "curve_nav_deviation=%.4f%% change=%.4f%% window=%ss",
                 latest.value,
                 change_pct,
@@ -1081,7 +1080,7 @@ class ArbitrageCollector(BaseCollector):
             return True
 
         logger.info(
-            "arbitrage collector skipped Velora path calculation because Curve/NAV is quiet: "
+            "arbitrage collector skipped path calculation because Curve/NAV is quiet: "
             "deviation=%.4f%% min_deviation=%.4f%% change=%.4f%% min_change=%.4f%% "
             "window=%ss",
             latest.value,
@@ -1153,7 +1152,7 @@ class ArbitrageCollector(BaseCollector):
                         metric_name=metric_name,
                         value=float(value),
                         unit=unit,
-                        source="velora_market",
+                        source="pendleswap_sdk",
                         recorded_at=sample.recorded_at,
                         details=details,
                     )
@@ -1174,7 +1173,7 @@ class ArbitrageCollector(BaseCollector):
                         metric_name=metric_name,
                         value=float(value),
                         unit=unit,
-                        source="velora_market",
+                        source="pendleswap_sdk",
                         recorded_at=best_metric_recorded_at or best_sample.recorded_at,
                         details=best_details,
                     )

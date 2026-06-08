@@ -9,8 +9,8 @@ from apyx_monitor.collectors.arbitrage import (
     BUY_SOURCE_SELL_TARGET,
     BUY_TARGET_SELL_SOURCE,
     ArbitrageCollector,
+    PendleSwapRouteUnavailableError,
     SwapQuote,
-    VeloraRouteUnavailableError,
 )
 from apyx_monitor.config import (
     ArbitrageMonitorDefinition,
@@ -112,7 +112,9 @@ class UnprocessableRemoteBuyCollector(MockArbitrageCollector):
         amount_in_raw: int,
     ) -> SwapQuote:
         if token_in == "base-apx" and token_out == "base-apy":
-            request = httpx.Request("GET", "https://api.paraswap.io/prices")
+            request = httpx.Request(
+                "POST", "https://api-v2.pendle.finance/core/v3/sdk/8453/convert"
+            )
             response = httpx.Response(422, request=request, json={"error": "no route"})
             raise httpx.HTTPStatusError(
                 "422 Unprocessable Entity", request=request, response=response
@@ -131,7 +133,7 @@ class UnavailableRemotePairCollector(MockArbitrageCollector):
         amount_in_raw: int,
     ) -> SwapQuote:
         if {token_in, token_out} == {"base-apx", "base-apy"}:
-            raise VeloraRouteUnavailableError("Velora route unavailable")
+            raise PendleSwapRouteUnavailableError("PendleSwap route unavailable")
         return await super()._quote(client, chain_id, monitor, token_in, token_out, amount_in_raw)
 
 
@@ -170,11 +172,11 @@ def test_remote_buy_uses_reverse_quote_fallback_when_pendle_returns_501():
     asyncio.run(_run_remote_buy_fallback_test())
 
 
-def test_remote_buy_uses_reverse_quote_fallback_when_velora_returns_422():
+def test_remote_buy_uses_reverse_quote_fallback_when_pendleswap_returns_422():
     asyncio.run(_run_remote_buy_422_fallback_test())
 
 
-def test_collect_skips_strategy_when_velora_route_is_unavailable():
+def test_collect_skips_strategy_when_pendleswap_route_is_unavailable():
     asyncio.run(_run_route_unavailable_skip_test())
 
 
@@ -182,11 +184,11 @@ def test_settlement_sell_uses_reverse_quote_fallback_when_pendle_returns_500():
     asyncio.run(_run_settlement_sell_fallback_test())
 
 
-def test_quote_uses_velora_market_api(monkeypatch):
-    asyncio.run(_run_quote_uses_velora_market_api_test(monkeypatch))
+def test_quote_uses_pendleswap_sdk_convert_api(monkeypatch):
+    asyncio.run(_run_quote_uses_pendleswap_sdk_convert_api_test(monkeypatch))
 
 
-def test_curve_nav_gate_skips_velora_when_deviation_is_quiet(monkeypatch):
+def test_curve_nav_gate_skips_path_calculation_when_deviation_is_quiet(monkeypatch):
     now = datetime.now(timezone.utc)
     collector = ArbitrageCollector(Settings(), _minimal_catalog())
     monkeypatch.setattr(
@@ -217,7 +219,7 @@ def test_curve_nav_gate_skips_velora_when_deviation_is_quiet(monkeypatch):
     assert collector._should_calculate_arbitrage_paths(now) is False
 
 
-def test_curve_nav_gate_allows_velora_when_deviation_is_large(monkeypatch):
+def test_curve_nav_gate_allows_path_calculation_when_deviation_is_large(monkeypatch):
     now = datetime.now(timezone.utc)
     collector = ArbitrageCollector(Settings(), _minimal_catalog())
     monkeypatch.setattr(
@@ -239,7 +241,7 @@ def test_curve_nav_gate_allows_velora_when_deviation_is_large(monkeypatch):
     assert collector._should_calculate_arbitrage_paths(now) is True
 
 
-def test_curve_nav_gate_allows_velora_when_deviation_changes_quickly(monkeypatch):
+def test_curve_nav_gate_allows_path_calculation_when_deviation_changes_quickly(monkeypatch):
     now = datetime.now(timezone.utc)
     collector = ArbitrageCollector(Settings(), _minimal_catalog())
     monkeypatch.setattr(
@@ -319,7 +321,7 @@ def test_curve_nav_gate_ignores_change_outside_one_minute(monkeypatch):
     assert collector._should_calculate_arbitrage_paths(now) is False
 
 
-def test_curve_nav_gate_skips_velora_when_deviation_is_stale(monkeypatch):
+def test_curve_nav_gate_skips_path_calculation_when_deviation_is_stale(monkeypatch):
     now = datetime.now(timezone.utc)
     collector = ArbitrageCollector(Settings(), _minimal_catalog())
     monkeypatch.setattr(
@@ -727,7 +729,7 @@ async def _run_settlement_sell_fallback_test():
     assert any(call[1] == "eth-apx" and call[2] == "eth-apy" for call in collector.quote_calls)
 
 
-async def _run_quote_uses_velora_market_api_test(monkeypatch):
+async def _run_quote_uses_pendleswap_sdk_convert_api_test(monkeypatch):
     sleep_calls: list[float] = []
 
     async def fake_sleep(seconds: float) -> None:
@@ -738,49 +740,25 @@ async def _run_quote_uses_velora_market_api_test(monkeypatch):
     class FakeClient:
         def __init__(self) -> None:
             self.url: str | None = None
-            self.params: dict | None = None
+            self.payload: dict | None = None
 
-        async def get(self, url: str, params: dict) -> httpx.Response:
+        async def post(self, url: str, json: dict) -> httpx.Response:
             self.url = url
-            self.params = params
-            request = httpx.Request("GET", url)
+            self.payload = json
+            request = httpx.Request("POST", url)
             return httpx.Response(
                 200,
                 request=request,
                 json={
-                    "priceRoute": {
-                        "blockNumber": 123,
-                        "network": 1,
-                        "destAmount": "2000000000000000000",
-                        "version": "6.2",
-                        "side": "SELL",
-                        "contractMethod": "swapExactAmountInOnCurveV1",
-                        "gasCostUSD": "0.01",
-                        "srcUSD": "1.00",
-                        "destUSD": "2.00",
-                        "bestRoute": [
-                            {
-                                "percent": 100,
-                                "swaps": [
-                                    {
-                                        "srcToken": "eth-apx",
-                                        "destToken": "eth-apy",
-                                        "swapExchanges": [
-                                            {
-                                                "exchange": "CurveV1StableNg",
-                                                "srcAmount": "1000000000000000000",
-                                                "destAmount": "2000000000000000000",
-                                                "percent": 100,
-                                                "poolAddresses": ["0xpool"],
-                                                "poolIdentifiers": ["curve-pool"],
-                                                "data": {"gasUSD": "0.01"},
-                                            }
-                                        ],
-                                    }
-                                ],
-                            }
-                        ],
-                    }
+                    "outputs": [
+                        {
+                            "token": "eth-apy",
+                            "amount": "2000000000000000000",
+                        }
+                    ],
+                    "route": {"provider": "PendleSwap", "steps": ["curve"]},
+                    "tx": {"to": "0xpendle", "data": "0x1234"},
+                    "gasUsd": "0.01",
                 },
             )
 
@@ -811,23 +789,22 @@ async def _run_quote_uses_velora_market_api_test(monkeypatch):
 
     quote = await collector._quote(client, 1, monitor, "eth-apx", "eth-apy", 10**18)
 
-    assert client.url == "https://api.paraswap.io/prices"
-    assert client.params["version"] == "6.2"
-    assert client.params["network"] == 1
-    assert client.params["side"] == "SELL"
-    assert client.params["srcToken"] == "eth-apx"
-    assert client.params["destToken"] == "eth-apy"
-    assert client.params["srcDecimals"] == 18
-    assert client.params["destDecimals"] == 18
-    assert "enableAggregator" not in client.params
+    assert client.url == "https://api-v2.pendle.finance/core/v3/sdk/1/convert"
+    assert client.payload["receiver"] == monitor.receiver_address
+    assert client.payload["slippage"] == 0.005
+    assert client.payload["enableAggregator"] is True
+    assert client.payload["aggregators"] == ["kyberswap", "odos"]
+    assert client.payload["inputs"] == [{"token": "eth-apx", "amount": str(10**18)}]
+    assert client.payload["outputs"] == ["eth-apy"]
+    assert client.payload["redeemRewards"] is False
+    assert client.payload["needScale"] is False
+    assert client.payload["useLimitOrder"] is True
     assert quote.amount_out_raw == 2 * 10**18
-    assert quote.method == "velora_market_6.2"
-    assert quote.routing["provider"] == "velora"
-    assert quote.routing["mode"] == "market"
-    assert quote.routing["contract_method"] == "swapExactAmountInOnCurveV1"
-    exchange = quote.routing["best_route"][0]["swaps"][0]["swap_exchanges"][0]
-    assert exchange["exchange"] == "CurveV1StableNg"
-    assert exchange["pool_addresses"] == ["0xpool"]
+    assert quote.method == "pendleswap_sdk"
+    assert quote.routing["provider"] == "pendleswap"
+    assert quote.routing["mode"] == "hosted_sdk_convert"
+    assert quote.routing["route"] == {"provider": "PendleSwap", "steps": ["curve"]}
+    assert quote.routing["tx"] == {"to": "0xpendle", "data": "0x1234"}
     assert sleep_calls
 
 

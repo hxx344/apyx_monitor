@@ -24,7 +24,7 @@
 - apxUSD market: `0x50dce085af29caba28f7308bea57c4043757b491`
 - apyUSD market: `0x3c53fae231ad3c0408a8b6d33138bbff1caec330`
 - API: `https://api-v2.pendle.finance/core/v1/1/markets/{marketAddress}`
-- Hosted SDK Convert API: `https://api-v2.pendle.finance/core/v2/sdk/{chainId}/convert`
+- Hosted SDK Convert API: `https://api-v2.pendle.finance/core/v3/sdk/{chainId}/convert`
 
 关键字段：
 - `yt.price.usd`
