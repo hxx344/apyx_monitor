@@ -32,28 +32,6 @@ rules:
     required_consecutive_hits: 1
     enabled: true
 
-  - rule_id: yt_apxusd_price_floor
-    description: YT-apxUSD 价格过低
-    entity_id: yt-apxusd
-    metric_name: price_usd
-    comparator: lt
-    threshold: 0.015
-    severity: P2
-    cooldown_seconds: 1800
-    required_consecutive_hits: 1
-    enabled: true
-
-  - rule_id: yt_apyusd_price_floor
-    description: YT-apyUSD 价格过低
-    entity_id: yt-apyusd
-    metric_name: price_usd
-    comparator: lt
-    threshold: 0.015
-    severity: P2
-    cooldown_seconds: 1800
-    required_consecutive_hits: 1
-    enabled: true
-
   - rule_id: morpho_apyusd_usdc_available_borrow_floor
     description: Morpho apyUSD/USDC 可借款额过低
     entity_id: morpho-apyusd-usdc

@@ -5,19 +5,16 @@ import asyncio
 import httpx
 
 from apyx_monitor.collectors import morpho as morpho_module
-from apyx_monitor.collectors import pendle as pendle_module
 from apyx_monitor.config import (
     AssetCatalog,
     ChainDefinition,
     MorphoMarketDefinition,
-    PendleMarketDefinition,
     Settings,
 )
 
 
 def _catalog(
     *,
-    pendle_markets: list[PendleMarketDefinition] | None = None,
     morpho_markets: list[MorphoMarketDefinition] | None = None,
 ) -> AssetCatalog:
     return AssetCatalog(
@@ -30,53 +27,9 @@ def _catalog(
             )
         ],
         assets=[],
-        pendle_markets=pendle_markets or [],
+        pendle_markets=[],
         morpho_markets=morpho_markets or [],
     )
-
-
-def test_pendle_collector_skips_rate_limited_response(monkeypatch):
-    asyncio.run(_run_pendle_rate_limited_test(monkeypatch))
-
-
-async def _run_pendle_rate_limited_test(monkeypatch):
-    pendle_module._rate_limited_until = None
-
-    class FakeAsyncClient:
-        def __init__(self, *args, **kwargs) -> None:
-            self.get_calls = 0
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args) -> None:
-            pass
-
-        async def get(self, url: str) -> httpx.Response:
-            self.get_calls += 1
-            request = httpx.Request("GET", url)
-            return httpx.Response(429, request=request)
-
-    monkeypatch.setattr(pendle_module.httpx, "AsyncClient", FakeAsyncClient)
-
-    collector = pendle_module.PendleCollector(
-        Settings(),
-        _catalog(
-            pendle_markets=[
-                PendleMarketDefinition(
-                    market_id="pendle-test",
-                    label="Pendle Test",
-                    market_address="0x0000000000000000000000000000000000000000",
-                    chain_id=1,
-                    underlying_asset_id="underlying",
-                    yt_asset_id="yt",
-                )
-            ]
-        ),
-    )
-
-    assert await collector.collect() == []
-    assert pendle_module._rate_limited_until is not None
 
 
 def test_morpho_collector_skips_null_metric_values(monkeypatch):

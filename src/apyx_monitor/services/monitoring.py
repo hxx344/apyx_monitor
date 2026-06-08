@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session
 
-from ..collectors import ArbitrageCollector, MorphoCollector, OnChainCollector, PendleCollector
+from ..collectors import ArbitrageCollector, MorphoCollector, OnChainCollector
 from ..collectors.base import BaseCollector, MetricPoint
 from ..config import get_asset_catalog, get_rule_catalog, get_settings
 from ..db import engine
@@ -27,7 +27,6 @@ class MonitoringService:
         self.onchain_collector = OnChainCollector(self.settings, self.asset_catalog)
         self.collectors = [
             self.onchain_collector,
-            PendleCollector(self.settings, self.asset_catalog),
             MorphoCollector(self.settings, self.asset_catalog),
             ArbitrageCollector(self.settings, self.asset_catalog),
         ]
@@ -89,9 +88,9 @@ class MonitoringService:
             }
 
     async def _collect_all(self) -> tuple[list[MetricPoint], dict[str, str]]:
-        results = await asyncio.gather(
-            *(self._collect_one(collector) for collector in self.collectors)
-        )
+        results = []
+        for collector in self.collectors:
+            results.append(await self._collect_one(collector))
         all_points: list[MetricPoint] = []
         errors: dict[str, str] = {}
         for collector_name, points, error in results:

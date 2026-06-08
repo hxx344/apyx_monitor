@@ -41,8 +41,6 @@ CARD_DEFS = [
     {"entity_id": "curve-apyusd-apxusd", "metric_name": "curve_rate_vs_nav_deviation_pct", "label": "Curve 偏离净值"},
     {"entity_id": "morpho-apyusd-usdc", "metric_name": "capped_collateralization_ratio", "label": "Apyx Capped Ratio"},
     {"entity_id": "morpho-apyusd-usdc", "metric_name": "capped_collateralization_ratio_deviation_pct", "label": "Capped Ratio 脱锚幅度"},
-    {"entity_id": "yt-apxusd", "metric_name": "implied_apy", "label": "YT-apxUSD 隐含 APY"},
-    {"entity_id": "yt-apyusd", "metric_name": "implied_apy", "label": "YT-apyUSD 隐含 APY"},
     {
         "entity_id": "morpho-apyusd-usdc",
         "metric_name": "available_to_borrow_usd",
@@ -74,13 +72,6 @@ CHART_DEFS = [
         "series": [
             {"entity_id": "apxusd", "metric_name": "underlying_apy", "label": "apxUSD 底层 APY", "color": "#f59e0b"},
             {"entity_id": "apyusd", "metric_name": "underlying_apy", "label": "apyUSD 底层 APY", "color": "#f472b6"},
-        ],
-    },
-    {
-        "title": "YT 隐含 APY 趋势",
-        "series": [
-            {"entity_id": "yt-apxusd", "metric_name": "implied_apy", "label": "YT-apxUSD 隐含 APY", "color": "#a78bfa"},
-            {"entity_id": "yt-apyusd", "metric_name": "implied_apy", "label": "YT-apyUSD 隐含 APY", "color": "#fb7185"},
         ],
     },
     {

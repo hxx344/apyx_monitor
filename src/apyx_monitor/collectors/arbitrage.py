@@ -14,18 +14,17 @@ from ..config import ArbitrageMonitorDefinition, AssetCatalog, AssetDefinition, 
 from ..db import engine
 from ..models import MetricSnapshot
 from .base import BaseCollector, MetricPoint
+from . import pendle_rate_limit
 
 PENDLE_SDK_BASE_URL = "https://api-v2.pendle.finance/core/v3/sdk"
 ARBITRAGE_ENTITY_ID = "arb-apyusd-apxusd-crosschain"
 BUY_SOURCE_SELL_TARGET = "buy-source-sell-target"
 BUY_TARGET_SELL_SOURCE = "buy-target-sell-source"
 QUOTE_THROTTLE_SECONDS = 4.0
-RATE_LIMIT_COOLDOWN_SECONDS = 600
 CURVE_NAV_ENTITY_ID = "curve-apyusd-apxusd"
 CURVE_NAV_DEVIATION_METRIC = "curve_rate_vs_nav_deviation_pct"
 
 logger = logging.getLogger(__name__)
-_rate_limited_until: datetime | None = None
 
 
 class PendleSwapRateLimitedError(RuntimeError):
@@ -113,13 +112,12 @@ class ArbitrageCollector(BaseCollector):
         }
 
     async def collect(self) -> list[MetricPoint]:
-        global _rate_limited_until
         now = datetime.now(timezone.utc)
-        if _rate_limited_until is not None and now < _rate_limited_until:
+        if pendle_rate_limit.is_rate_limited(now):
             logger.warning(
                 "arbitrage collector skipped because PendleSwap Hosted SDK is rate limited "
                 "until %s",
-                _rate_limited_until.isoformat(),
+                pendle_rate_limit.rate_limited_until().isoformat(),
             )
             return []
 
@@ -218,13 +216,13 @@ class ArbitrageCollector(BaseCollector):
                             quote_cache,
                         )
                     except PendleSwapRateLimitedError:
-                        _rate_limited_until = datetime.now(timezone.utc) + timedelta(
-                            seconds=RATE_LIMIT_COOLDOWN_SECONDS
+                        rate_limited_until = pendle_rate_limit.mark_rate_limited_for(
+                            pendle_rate_limit.RATE_LIMIT_COOLDOWN_SECONDS
                         )
                         logger.warning(
                             "arbitrage collector entering PendleSwap Hosted SDK rate-limit "
                             "cooldown until %s",
-                            _rate_limited_until.isoformat(),
+                            rate_limited_until.isoformat(),
                         )
                         return self._samples_to_metrics(
                             samples,
@@ -719,7 +717,10 @@ class ArbitrageCollector(BaseCollector):
         await asyncio.sleep(QUOTE_THROTTLE_SECONDS)
         response = await client.post(f"{PENDLE_SDK_BASE_URL}/{chain_id}/convert", json=payload)
         if response.status_code == 429:
-            retry_after = self._retry_after_seconds(response) or RATE_LIMIT_COOLDOWN_SECONDS
+            retry_after = (
+                self._retry_after_seconds(response)
+                or pendle_rate_limit.RATE_LIMIT_COOLDOWN_SECONDS
+            )
             raise PendleSwapRateLimitedError(
                 f"PendleSwap Hosted SDK rate limited; retry after {retry_after:.0f}s"
             )

@@ -84,21 +84,7 @@ assets:
     price_hint_usd: 1.0
     enabled: true
 
-pendle_markets:
-  - market_id: pendle-apxusd-18jun2026
-    label: YT-apxUSD-18JUN2026
-    market_address: "0x50dce085af29caba28f7308bea57c4043757b491"
-    chain_id: 1
-    underlying_asset_id: apxusd
-    yt_asset_id: yt-apxusd
-    enabled: true
-  - market_id: pendle-apyusd-18jun2026
-    label: YT-apyUSD-18JUN2026
-    market_address: "0x3c53fae231ad3c0408a8b6d33138bbff1caec330"
-    chain_id: 1
-    underlying_asset_id: apyusd
-    yt_asset_id: yt-apyusd
-    enabled: true
+pendle_markets: []
 
 morpho_markets:
   - market_id: morpho-apyusd-usdc

@@ -3,7 +3,6 @@
 一个面向 APYX 生态的监控服务 MVP，覆盖：
 
 - `apxUSD` / `apyUSD` 的 TVL 与基础链上指标
-- `yt-apxUSD` / `yt-apyUSD` 的 Pendle 隐含 APY 与相关市场指标
 - Curve `apyUSD/apxUSD` 池子的实时兑换汇率
 - Ethereum / Base / BSC `apyUSD` 与 `apxUSD` 的 PendleSwap 闭环跨链套利报价监控
 - Morpho 市场的可借款额、借款利率、利用率
@@ -15,7 +14,6 @@
 
 ### 数据源
 - APYX 文档：用于发现合约与市场
-- Pendle REST：YT 价格、隐含 APY、流动性、基础资产价格
 - Pendle Hosted SDK：`apyUSD` / `apxUSD` 路由报价，用于套利空间估算
 - Morpho GraphQL：可借款额、借款利率、供给/借款、利用率
 - 链上 RPC：`apxUSD` / `apyUSD` 的 `totalSupply` / `totalAssets`
@@ -24,9 +22,6 @@
 
 ### 当前默认监控对象
 - Ethereum + Base + BSC 上的 `apxUSD`、`apyUSD`
-- Ethereum 上 Pendle 市场
-  - `0x50dce085af29caba28f7308bea57c4043757b491` (`YT-apxUSD-18JUN2026`)
-  - `0x3c53fae231ad3c0408a8b6d33138bbff1caec330` (`YT-apyUSD-18JUN2026`)
 - Ethereum 上 Morpho 市场
   - `0x9c28c8fa039a8df548a7f27adf062d751b0f2e9b9131931810535543adb23291` (`apyUSD/USDC`)
 - Ethereum 上 Curve 池
@@ -126,17 +121,17 @@ sqlite3 data/apyx_monitor.db "DELETE FROM metricsnapshot WHERE recorded_at < dat
 
 ## 目录结构
 
-- `config/assets.yaml`：资产、合约、Pendle、Morpho 配置
+- `config/assets.yaml`：资产、合约、Morpho 和套利路径配置
 - `config/rules.yaml`：告警规则
 - `docs/data-sources.md`：已确认资料来源
 - `src/apyx_monitor/`：应用代码
 
 ## 说明
 
-- `apyUSD` 的底层 APR 读取官方链上 `ApyUSDRateView.apy()`，底层 APY 使用 APR 按月复利换算；`apxUSD` 暂继续使用 Pendle 市场中的 `underlyingApy`。
+- `apyUSD` 的底层 APR 读取官方链上 `ApyUSDRateView.apy()`，底层 APY 使用 APR 按月复利换算。
 - `apyUSD` 作为 ERC-4626 vault，TVL 采用 `totalAssets` 近似，NAV 采用 `totalAssets / totalSupply`。
 - 默认规则仅为示例值，正式环境需按业务重新标定。
-- 已新增简单看板，可查看 TVL、底层 APY、YT 隐含 APY、Curve 汇率、Morpho 指标和闭环跨链套利报价历史趋势。
+- 已新增简单看板，可查看 TVL、底层 APY、Curve 汇率、Morpho 指标和闭环跨链套利报价历史趋势。
 - 默认新增风险监控：
     - Curve `apyUSD/apxUSD` 汇率相对 `apyUSD.convertToAssets()` 偏离超过 `1%`
     - `Apyx Capped Ratio` 相对 `1.0` 脱锚超过 `0.5%`

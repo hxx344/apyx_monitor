@@ -20,20 +20,8 @@
 - apyUSD: `0xa14556f13516C53FF035858Ffd21E1625e7EADfd`
 - APYX Pendle apxUSD market: `0x34a1caef9f303a33e5d15bc5bc85064a39b7d1df`
 
-## Pendle 市场
-- apxUSD market: `0x50dce085af29caba28f7308bea57c4043757b491`
-- apyUSD market: `0x3c53fae231ad3c0408a8b6d33138bbff1caec330`
-- API: `https://api-v2.pendle.finance/core/v1/1/markets/{marketAddress}`
+## PendleSwap 报价
 - Hosted SDK Convert API: `https://api-v2.pendle.finance/core/v3/sdk/{chainId}/convert`
-
-关键字段：
-- `yt.price.usd`
-- `pt.price.usd`
-- `impliedApy`
-- `underlyingApy`
-- `liquidity.usd`
-- `underlyingAsset.price.usd`
-- `dataUpdatedAt`
 
 套利报价口径：
 - 始终以 Ethereum `USDC` 作为本金和最终收益资产
@@ -42,7 +30,7 @@
 - 当目标链的 `apyUSD/apxUSD` 更低时：Ethereum `USDC -> apxUSD`，桥 `apxUSD` 到目标链，目标链 `apxUSD -> apyUSD`，桥 `apyUSD` 回 Ethereum，Ethereum `apyUSD -> USDC`
 - 当前桥费与 gas 成本默认按 `0` 计入，后续可在 `config/assets.yaml` 的 `arbitrage_monitors` 中调整；桥费会按去程和回程两次扣除
 - 默认只采样 Ethereum `$10,000` USDC 本金档位；Pendle Hosted SDK 返回 `429` 时套利采集会进入 10 分钟冷却，避免继续触发限流
-- 为降低 Pendle Hosted SDK 限流压力，套利采集每轮只采一条目标链，Ethereum ↔ Base 与 Ethereum ↔ BSC 交替更新；同一轮同一本金会复用所有完全相同的 Pendle quote；最终 `apxUSD -> USDC` 出场金额按入场有效价格反推，不再额外请求反向报价，SDK 请求之间默认间隔 4 秒
+- 为降低 Pendle Hosted SDK 限流压力，套利采集每轮只采一条目标链，Ethereum ↔ Base 与 Ethereum ↔ BSC 交替更新；同一轮同一本金会复用所有完全相同的 Pendle quote；每条策略只请求 3 段实际换币报价，桥接默认代币数量不变，SDK 请求之间默认间隔 4 秒
 
 ## Morpho 市场
 - apyUSD/USDC marketId: `0x9c28c8fa039a8df548a7f27adf062d751b0f2e9b9131931810535543adb23291`
@@ -80,8 +68,6 @@
 - `apxUSD TVL`: 多链 `totalSupply * 1 USD`
 - `apyUSD TVL`: 多链 `totalAssets * 1 USD`
 - `apyUSD NAV`: `totalAssets / totalSupply`
-- `yt-* price`: Pendle `yt.price.usd`
-- `apxUSD underlying APY`: Pendle `underlyingApy`
 - `apyUSD underlying APR`: 链上 `ApyUSDRateView.apy()`
 - `apyUSD underlying APY`: `(1 + APR / 12) ** 12 - 1`
 - `Curve exchange_rate`: Curve pool `get_dy(apyUSD -> apxUSD, 1e18)`
