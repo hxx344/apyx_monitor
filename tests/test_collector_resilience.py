@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 import httpx
 
 from apyx_monitor.collectors import morpho as morpho_module
+from apyx_monitor.collectors.onchain import (
+    APYUSD_HEDGED_NAV_DISCOUNT_ENTITY_ID,
+    APYUSD_UNLOCK_DAYS,
+    _apyusd_hedged_nav_discount_metrics,
+)
 from apyx_monitor.config import (
     AssetCatalog,
     ChainDefinition,
@@ -34,6 +40,34 @@ def _catalog(
 
 def test_morpho_collector_skips_null_metric_values(monkeypatch):
     asyncio.run(_run_morpho_null_metric_test(monkeypatch))
+
+
+def test_apyusd_hedged_nav_discount_metrics_annualize_unlock_return():
+    metrics = _apyusd_hedged_nav_discount_metrics(
+        recorded_at=datetime.now(timezone.utc),
+        convert_to_assets=1.05,
+        exchange_rate=1.00,
+        fast_scan=True,
+    )
+
+    by_name = {metric.metric_name: metric for metric in metrics}
+    expected_apy = ((1.05 ** (365 / APYUSD_UNLOCK_DAYS)) - 1) * 100
+
+    assert by_name["unlock_return_pct"].entity_id == APYUSD_HEDGED_NAV_DISCOUNT_ENTITY_ID
+    assert round(by_name["unlock_return_pct"].value, 6) == 5.0
+    assert round(by_name["annualized_apy_pct"].value, 6) == round(expected_apy, 6)
+    assert by_name["annualized_apy_pct"].details["fast_scan"] is True
+
+
+def test_apyusd_hedged_nav_discount_metrics_skip_invalid_entry_price():
+    assert (
+        _apyusd_hedged_nav_discount_metrics(
+            recorded_at=datetime.now(timezone.utc),
+            convert_to_assets=1.05,
+            exchange_rate=0,
+        )
+        == []
+    )
 
 
 async def _run_morpho_null_metric_test(monkeypatch):

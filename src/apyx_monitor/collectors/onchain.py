@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
 from datetime import datetime, timezone
-import logging
 
 from web3 import Web3
 
 from ..config import AssetCatalog, Settings
 from .base import BaseCollector, MetricPoint
-
 
 ERC20_ABI = [
     {
@@ -128,6 +127,8 @@ APYX_APYUSD_RATE_VIEW = "0xCABa36EDE2C08e16F3602e8688a8bE94c1B4e484"
 APYX_CAPPED_COLLATERALIZATION_RATIO_FEED = "0x2037a5Eb67aa9B2FBF50042B724D8c4dB80F23b4"
 CURVE_APYUSD_APXUSD_POOL_ID = "curve-apyusd-apxusd"
 COMPOUNDING_PERIODS_PER_YEAR = 12
+APYUSD_HEDGED_NAV_DISCOUNT_ENTITY_ID = "apyusd-hedged-nav-discount"
+APYUSD_UNLOCK_DAYS = 20
 
 
 logger = logging.getLogger(__name__)
@@ -440,6 +441,14 @@ class OnChainCollector(BaseCollector):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("curve pool %s failed: %s", pool.pool_id, exc)
 
+        metrics.extend(
+            _apyusd_hedged_nav_discount_metrics(
+                recorded_at,
+                apyusd_convert_to_assets,
+                curve_exchange_rate,
+            )
+        )
+
         if apyusd_convert_to_assets and curve_exchange_rate is not None:
             deviation_pct = abs(curve_exchange_rate / apyusd_convert_to_assets - 1) * 100
             metrics.append(
@@ -643,6 +652,15 @@ class OnChainCollector(BaseCollector):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("nav/curve pool %s failed: %s", pool.pool_id, exc)
 
+        metrics.extend(
+            _apyusd_hedged_nav_discount_metrics(
+                recorded_at,
+                apyusd_convert_to_assets,
+                curve_exchange_rate,
+                fast_scan=True,
+            )
+        )
+
         if apyusd_convert_to_assets and curve_exchange_rate is not None:
             deviation_pct = abs(curve_exchange_rate / apyusd_convert_to_assets - 1) * 100
             metrics.append(
@@ -670,3 +688,52 @@ class OnChainCollector(BaseCollector):
         if chain_name not in self._providers:
             self._providers[chain_name] = Web3(Web3.HTTPProvider(rpc_url))
         return self._providers[chain_name]
+
+
+def _apyusd_hedged_nav_discount_metrics(
+    recorded_at: datetime,
+    convert_to_assets: float | None,
+    exchange_rate: float | None,
+    *,
+    fast_scan: bool = False,
+) -> list[MetricPoint]:
+    if convert_to_assets is None or exchange_rate is None or exchange_rate <= 0:
+        return []
+
+    nav_to_entry_ratio = convert_to_assets / exchange_rate
+    unlock_return_pct = (nav_to_entry_ratio - 1) * 100
+    annualized_apy_pct = (nav_to_entry_ratio ** (365 / APYUSD_UNLOCK_DAYS) - 1) * 100
+    source = "derived:onchain:nav_curve_fast" if fast_scan else "derived:onchain"
+    details = {
+        "strategy": "long_apyusd_short_strc_apxusd_hedge",
+        "unlock_days": APYUSD_UNLOCK_DAYS,
+        "exchange_rate": exchange_rate,
+        "convert_to_assets": convert_to_assets,
+        "formula_return_pct": "(convert_to_assets / exchange_rate - 1) * 100",
+        "formula_apy_pct": "(convert_to_assets / exchange_rate) ** (365 / unlock_days) - 1",
+    }
+    if fast_scan:
+        details["fast_scan"] = True
+
+    return [
+        MetricPoint(
+            entity_id=APYUSD_HEDGED_NAV_DISCOUNT_ENTITY_ID,
+            entity_type="strategy",
+            metric_name="unlock_return_pct",
+            value=float(unlock_return_pct),
+            unit="pct",
+            source=source,
+            recorded_at=recorded_at,
+            details=details,
+        ),
+        MetricPoint(
+            entity_id=APYUSD_HEDGED_NAV_DISCOUNT_ENTITY_ID,
+            entity_type="strategy",
+            metric_name="annualized_apy_pct",
+            value=float(annualized_apy_pct),
+            unit="pct",
+            source=source,
+            recorded_at=recorded_at,
+            details=details,
+        ),
+    ]

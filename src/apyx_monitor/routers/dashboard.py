@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import base64
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
-from html import escape
 import json
 import re
 import secrets
 import time
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from html import escape
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
@@ -39,6 +39,13 @@ CARD_DEFS = [
     {"entity_id": "apyusd-ethereum", "metric_name": "convert_to_assets", "label": "apyUSD convertToAssets()"},
     {"entity_id": "curve-apyusd-apxusd", "metric_name": "exchange_rate", "label": "Curve 1 apyUSD → apxUSD"},
     {"entity_id": "curve-apyusd-apxusd", "metric_name": "curve_rate_vs_nav_deviation_pct", "label": "Curve 偏离净值"},
+    {
+        "entity_id": "apyusd-hedged-nav-discount",
+        "metric_name": "annualized_apy_pct",
+        "secondary_metric_name": "unlock_return_pct",
+        "label": "apyUSD 20日对冲 APY",
+        "display": "hedged_nav_discount",
+    },
     {"entity_id": "morpho-apyusd-usdc", "metric_name": "capped_collateralization_ratio", "label": "Apyx Capped Ratio"},
     {"entity_id": "morpho-apyusd-usdc", "metric_name": "capped_collateralization_ratio_deviation_pct", "label": "Capped Ratio 脱锚幅度"},
     {
@@ -91,6 +98,13 @@ CHART_DEFS = [
         "series": [
             {"entity_id": "curve-apyusd-apxusd", "metric_name": "curve_rate_vs_nav_deviation_pct", "label": "Curve 偏离净值", "color": "#f97316"},
             {"entity_id": "morpho-apyusd-usdc", "metric_name": "capped_collateralization_ratio_deviation_pct", "label": "Capped Ratio 脱锚幅度", "color": "#ef4444"},
+        ],
+    },
+    {
+        "title": "apyUSD 20日对冲 APY 趋势",
+        "series": [
+            {"entity_id": "apyusd-hedged-nav-discount", "metric_name": "annualized_apy_pct", "label": "20日对冲 APY", "color": "#a78bfa"},
+            {"entity_id": "apyusd-hedged-nav-discount", "metric_name": "unlock_return_pct", "label": "20日收益率", "color": "#2dd4bf"},
         ],
     },
     {
@@ -449,6 +463,9 @@ def _render_cards(session: Session, latest_map: dict[tuple[str, str], MetricSnap
         if item.get("display") == "apr_apy_pair":
             cards.append(_render_apr_apy_card(item, latest_map))
             continue
+        if item.get("display") == "hedged_nav_discount":
+            cards.append(_render_hedged_nav_discount_card(item, latest_map))
+            continue
 
         metric = latest_map.get((item["entity_id"], item["metric_name"]))
         value = _format_value(item["metric_name"], metric.value if metric else None)
@@ -473,6 +490,37 @@ def _render_cards(session: Session, latest_map: dict[tuple[str, str], MetricSnap
             '''
         )
     return "".join(cards)
+
+
+def _render_hedged_nav_discount_card(
+    item: dict,
+    latest_map: dict[tuple[str, str], MetricSnapshot],
+) -> str:
+    entity_id = item["entity_id"]
+    apy_metric = latest_map.get((entity_id, item["metric_name"]))
+    return_metric = latest_map.get((entity_id, item["secondary_metric_name"]))
+    curve_metric = latest_map.get(("curve-apyusd-apxusd", "exchange_rate"))
+    nav_metric = latest_map.get(("apyusd-ethereum", "convert_to_assets"))
+
+    metric_times = [
+        metric.recorded_at
+        for metric in (apy_metric, return_metric, curve_metric, nav_metric)
+        if metric
+    ]
+    recorded_at = f"{_format_dt(max(metric_times))} 北京时间" if metric_times else "-"
+
+    return f'''
+            <div class="card strategy-card">
+              <div class="label">{escape(item["label"])}</div>
+              <div class="value">{escape(_format_value("annualized_apy_pct", apy_metric.value if apy_metric else None))}</div>
+              <div class="strategy-grid">
+                <div><span>20天收益</span><strong>{escape(_format_value("unlock_return_pct", return_metric.value if return_metric else None))}</strong></div>
+                <div><span>Curve 买入价</span><strong>{escape(_format_value("exchange_rate", curve_metric.value if curve_metric else None))}</strong></div>
+                <div><span>NAV 结算价</span><strong>{escape(_format_value("convert_to_assets", nav_metric.value if nav_metric else None))}</strong></div>
+              </div>
+              <div class="meta">假设 Lighter 做空等额 STRC 对冲 apxUSD 风险；更新时间：{escape(recorded_at)}</div>
+            </div>
+            '''
 
 
 def _render_apr_apy_card(item: dict, latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
@@ -671,7 +719,6 @@ def _render_morpho_market_sections(session: Session, latest_map: dict[tuple[str,
     bucket_minutes = 5 if hours <= 6 else 15 if hours <= 24 else 60
     rows = []
     for market in MORPHO_MARKETS:
-        available = latest_map.get((market.market_id, "available_to_borrow_usd"))
         borrow_apy = latest_map.get((market.market_id, "borrow_apy"))
         utilization = latest_map.get((market.market_id, "utilization_pct"))
         liquidity_chart_id = _slugify(f"{market.label}-liquidity")
@@ -1256,6 +1303,11 @@ def dashboard(
     .yield-stat {{ min-width: 0; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(148,163,184,0.12); background: rgba(15,23,42,0.48); }}
     .yield-stat span {{ display: block; color: var(--muted); font-size: 11px; margin-bottom: 5px; }}
     .yield-stat strong {{ display: block; font-size: 22px; line-height: 1.1; white-space: nowrap; }}
+    .strategy-card {{ min-width: 280px; }}
+    .strategy-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 10px 0 8px; }}
+    .strategy-grid div {{ min-width: 0; padding: 9px 10px; border-radius: 12px; border: 1px solid rgba(148,163,184,0.12); background: rgba(15,23,42,0.48); }}
+    .strategy-grid span {{ display: block; color: var(--muted); font-size: 11px; margin-bottom: 5px; white-space: nowrap; }}
+    .strategy-grid strong {{ display: block; color: #e2e8f0; font-size: 15px; line-height: 1.15; overflow-wrap: anywhere; }}
     .grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }}
     .threshold-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }}
     .threshold-card {{ display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 16px; border: 1px solid rgba(148,163,184,0.16); background: rgba(15,23,42,0.45); }}
