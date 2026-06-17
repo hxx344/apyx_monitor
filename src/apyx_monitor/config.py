@@ -40,7 +40,10 @@ class Settings(BaseSettings):
     dashboard_username: str = Field(default="admin", alias="DASHBOARD_USERNAME")
     dashboard_password: str = Field(default="admin", alias="DASHBOARD_PASSWORD")
     dashboard_session_secret: str = Field(default="change-me", alias="DASHBOARD_SESSION_SECRET")
-    dashboard_session_ttl_seconds: int = Field(default=86400, alias="DASHBOARD_SESSION_TTL_SECONDS")
+    dashboard_session_ttl_seconds: int = Field(
+        default=30 * 24 * 60 * 60,
+        alias="DASHBOARD_SESSION_TTL_SECONDS",
+    )
     feishu_webhook_url: Optional[str] = Field(default=None, alias="FEISHU_WEBHOOK_URL")
     feishu_secret: Optional[str] = Field(default=None, alias="FEISHU_SECRET")
 

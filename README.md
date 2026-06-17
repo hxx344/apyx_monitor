@@ -60,7 +60,7 @@ uvicorn apyx_monitor.main:app --reload
 - `DASHBOARD_USERNAME`：看板账号
 - `DASHBOARD_PASSWORD`：看板密码
 - `DASHBOARD_SESSION_SECRET`：Cookie 会话签名密钥，生产环境请使用足够长的随机字符串
-- `DASHBOARD_SESSION_TTL_SECONDS`：登录有效期，默认 `86400` 秒
+- `DASHBOARD_SESSION_TTL_SECONDS`：登录有效期，默认 `2592000` 秒（30 天）
 
 ## 执行指南
 
