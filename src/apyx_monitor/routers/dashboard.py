@@ -58,6 +58,11 @@ CARD_DEFS = [
         "metric_name": "best_net_profit_usd",
         "label": "闭环套利最佳净利润",
     },
+    {
+        "entity_id": "arb-apyusd-apxusd-crosschain",
+        "metric_name": "best_apxusd_loop_final",
+        "label": "10,000 apxUSD 闭环后",
+    },
 ]
 
 MORPHO_MARKETS = [market for market in get_asset_catalog().morpho_markets if market.enabled]
