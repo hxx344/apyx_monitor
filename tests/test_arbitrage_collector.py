@@ -201,11 +201,11 @@ class FailingSettlementSellCollector(MockArbitrageCollector):
 
 
 def test_arbitrage_profit_is_measured_from_ethereum_usdc():
-    asyncio.run(_run_arbitrage_profit_test(BUY_SOURCE_SELL_TARGET, 10300, 300, 3))
+    asyncio.run(_run_arbitrage_profit_test(BUY_SOURCE_SELL_TARGET, 10300, 300, 3, 10300))
 
 
 def test_reverse_arbitrage_path_is_also_measured_from_ethereum_usdc():
-    asyncio.run(_run_arbitrage_profit_test(BUY_TARGET_SELL_SOURCE, 10200, 200, 2))
+    asyncio.run(_run_arbitrage_profit_test(BUY_TARGET_SELL_SOURCE, 10200, 200, 2, 10200))
 
 
 def test_collect_rotates_base_and_bsc_routes():
@@ -493,7 +493,11 @@ async def _run_forced_collect_bypasses_curve_nav_gate_test(monkeypatch):
 
 
 async def _run_arbitrage_profit_test(
-    strategy_id: str, final_usdc: float, profit: float, edge_pct: float
+    strategy_id: str,
+    final_usdc: float,
+    profit: float,
+    edge_pct: float,
+    apxusd_loop_final: float,
 ):
     monitor = ArbitrageMonitorDefinition(
         monitor_id="arb-ethereum-base",
@@ -557,6 +561,9 @@ async def _run_arbitrage_profit_test(
     else:
         assert sample.final_apxusd_amount == 10000
     assert sample.final_amount == final_usdc
+    assert sample.apxusd_loop_start_amount == 10000
+    assert sample.apxusd_loop_final_amount == apxusd_loop_final
+    assert sample.apxusd_loop_profit == apxusd_loop_final - 10000
     assert sample.net_profit_usd == profit
     assert sample.net_edge_pct == edge_pct
     assert sample.route_steps[0]["from_symbol"] == "USDC"
@@ -615,7 +622,7 @@ async def _run_collect_quote_count_test():
     first_metrics = await collector.collect()
 
     assert first_metrics
-    assert len(collector.quote_calls) == 6
+    assert len(collector.quote_calls) == 8
     assert (
         len(
             [
@@ -660,8 +667,8 @@ async def _run_collect_quote_count_test():
     second_metrics = await collector.collect()
 
     assert second_metrics
-    assert len(collector.quote_calls) == 12
-    second_collect_calls = collector.quote_calls[6:]
+    assert len(collector.quote_calls) == 16
+    second_collect_calls = collector.quote_calls[8:]
     assert (
         len(
             [
@@ -1018,7 +1025,7 @@ async def _run_quote_falls_back_to_jumper_when_pendleswap_is_rate_limited_test(m
         {},
     )
 
-    assert [call[0] for call in client.calls] == ["POST", "GET", "GET", "GET"]
+    assert [call[0] for call in client.calls] == ["POST", "GET", "GET", "GET", "GET"]
     assert client.calls[1][1] == "https://li.quest/v1/quote"
     assert client.calls[1][2]["fromChain"] == "1"
     assert client.calls[1][2]["toChain"] == "1"
@@ -1030,7 +1037,7 @@ async def _run_quote_falls_back_to_jumper_when_pendleswap_is_rate_limited_test(m
         "jumper",
         "jumper",
     ]
-    assert sleep_calls == [4.0, 4.0, 4.0, 4.0]
+    assert sleep_calls == [4.0, 4.0, 4.0, 4.0, 4.0]
     pendle_rate_limit.clear_rate_limit()
     arbitrage_module._quote_provider_cooldowns.clear()
 
@@ -1087,14 +1094,14 @@ async def _run_quote_falls_back_to_jumper_when_pendleswap_times_out_test(monkeyp
         {},
     )
 
-    assert [call[0] for call in client.calls] == ["POST", "GET", "GET", "GET"]
+    assert [call[0] for call in client.calls] == ["POST", "GET", "GET", "GET", "GET"]
     assert all(call[1] == "https://li.quest/v1/quote" for call in client.calls[1:])
     assert [step["routing"]["provider"] for step in sample.route_steps if step["type"] == "swap"] == [
         "jumper",
         "jumper",
         "jumper",
     ]
-    assert sleep_calls == [4.0, 4.0, 4.0, 4.0]
+    assert sleep_calls == [4.0, 4.0, 4.0, 4.0, 4.0]
     pendle_rate_limit.clear_rate_limit()
     arbitrage_module._quote_provider_cooldowns.clear()
 
@@ -1155,7 +1162,7 @@ async def _run_quote_falls_back_to_velora_when_pendleswap_and_jumper_are_rate_li
         {},
     )
 
-    assert [call[0] for call in client.calls] == ["POST", "GET", "GET", "GET", "GET"]
+    assert [call[0] for call in client.calls] == ["POST", "GET", "GET", "GET", "GET", "GET"]
     assert client.calls[1][1] == "https://li.quest/v1/quote"
     assert client.calls[2][1] == "https://api.paraswap.io/prices"
     assert client.calls[2][2]["srcToken"] == "usdc"
@@ -1168,7 +1175,7 @@ async def _run_quote_falls_back_to_velora_when_pendleswap_and_jumper_are_rate_li
         "velora",
         "velora",
     ]
-    assert sleep_calls == [4.0, 4.0, 4.0, 4.0, 4.0]
+    assert sleep_calls == [4.0, 4.0, 4.0, 4.0, 4.0, 4.0]
     pendle_rate_limit.clear_rate_limit()
     arbitrage_module._quote_provider_cooldowns.clear()
 
