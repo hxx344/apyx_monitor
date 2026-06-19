@@ -23,6 +23,7 @@ ARBITRAGE_ENTITY_ID = "arb-apyusd-apxusd-crosschain"
 BUY_SOURCE_SELL_TARGET = "buy-source-sell-target"
 BUY_TARGET_SELL_SOURCE = "buy-target-sell-source"
 QUOTE_THROTTLE_SECONDS = 4.0
+APXUSD_LOOP_NOTIONAL = 10000.0
 CURVE_NAV_ENTITY_ID = "curve-apyusd-apxusd"
 CURVE_NAV_DEVIATION_METRIC = "curve_rate_vs_nav_deviation_pct"
 PENDLESWAP_PROVIDER = "pendleswap"
@@ -100,6 +101,10 @@ class ArbitrageSample:
     sold_apxusd_amount: float
     final_apxusd_amount: float
     final_amount: float
+    apxusd_loop_start_amount: float
+    apxusd_loop_final_amount: float
+    apxusd_loop_profit: float
+    apxusd_loop_edge_pct: float
     first_bridge_cost_usd: float
     second_bridge_cost_usd: float
     gross_profit_usd: float
@@ -404,6 +409,19 @@ class ArbitrageCollector(BaseCollector):
         )
         start_amount = funding_raw / 10 ** funding_asset.decimals
 
+        apxusd_loop_start_amount, apxusd_loop_final_amount = await self._sample_apxusd_loop(
+            client,
+            monitor,
+            chain_id_map,
+            settlement_apxusd,
+            settlement_apyusd,
+            remote_apxusd,
+            remote_apyusd,
+            BUY_SOURCE_SELL_TARGET,
+            quote_cache,
+            quote_provider,
+        )
+
         entry_leg = await self._quote_cached(
             client,
             settlement_chain_id,
@@ -542,6 +560,8 @@ class ArbitrageCollector(BaseCollector):
             sold_apxusd_amount=sold_apxusd_amount,
             final_apxusd_amount=final_apxusd_amount,
             final_amount=final_amount,
+            apxusd_loop_start_amount=apxusd_loop_start_amount,
+            apxusd_loop_final_amount=apxusd_loop_final_amount,
             first_bridge_cost_usd=first_bridge_cost_usd,
             second_bridge_cost_usd=second_bridge_cost_usd,
             route_steps=route_steps,
@@ -570,6 +590,20 @@ class ArbitrageCollector(BaseCollector):
             funding_asset.decimals,
         )
         start_amount = funding_raw / 10 ** funding_asset.decimals
+
+        apxusd_loop_start_amount, apxusd_loop_final_amount = await self._sample_apxusd_loop(
+            client,
+            monitor,
+            chain_id_map,
+            settlement_apxusd,
+            settlement_apyusd,
+            remote_apxusd,
+            remote_apyusd,
+            BUY_TARGET_SELL_SOURCE,
+            quote_cache,
+            quote_provider,
+        )
+
         entry_leg = await self._quote_cached(
             client,
             settlement_chain_id,
@@ -712,10 +746,86 @@ class ArbitrageCollector(BaseCollector):
             sold_apxusd_amount=sold_apxusd_amount,
             final_apxusd_amount=final_apxusd_amount,
             final_amount=final_amount,
+            apxusd_loop_start_amount=apxusd_loop_start_amount,
+            apxusd_loop_final_amount=apxusd_loop_final_amount,
             first_bridge_cost_usd=first_bridge_cost_usd,
             second_bridge_cost_usd=second_bridge_cost_usd,
             route_steps=route_steps,
             recorded_at=recorded_at,
+        )
+
+    async def _sample_apxusd_loop(
+        self,
+        client: httpx.AsyncClient,
+        monitor: ArbitrageMonitorDefinition,
+        chain_id_map: dict[str, int],
+        settlement_apxusd: AssetDefinition,
+        settlement_apyusd: AssetDefinition,
+        remote_apxusd: AssetDefinition,
+        remote_apyusd: AssetDefinition,
+        strategy_id: str,
+        quote_cache: QuoteCache | None,
+        quote_provider: str,
+    ) -> tuple[float, float]:
+        settlement_chain_id = chain_id_map[monitor.source_chain]
+        remote_chain_id = chain_id_map[monitor.target_chain]
+        start_raw = self._to_raw_amount(APXUSD_LOOP_NOTIONAL, settlement_apxusd.decimals)
+
+        if strategy_id == BUY_SOURCE_SELL_TARGET:
+            entry_leg = await self._quote_cached(
+                client,
+                settlement_chain_id,
+                monitor,
+                settlement_apxusd.contract_address,
+                settlement_apyusd.contract_address,
+                start_raw,
+                quote_cache,
+                quote_provider=quote_provider,
+            )
+            remote_apyusd_raw = entry_leg.amount_out_raw
+            exit_leg = await self._quote_cached(
+                client,
+                remote_chain_id,
+                monitor,
+                remote_apyusd.contract_address,
+                remote_apxusd.contract_address,
+                remote_apyusd_raw,
+                quote_cache,
+                quote_provider=quote_provider,
+            )
+            final_raw = exit_leg.amount_out_raw
+        elif strategy_id == BUY_TARGET_SELL_SOURCE:
+            remote_apxusd_raw = start_raw
+            entry_leg = await self._quote_cached(
+                client,
+                remote_chain_id,
+                monitor,
+                remote_apxusd.contract_address,
+                remote_apyusd.contract_address,
+                remote_apxusd_raw,
+                quote_cache,
+                allow_reverse_fallback=True,
+                quote_provider=quote_provider,
+            )
+            settlement_apyusd_raw = entry_leg.amount_out_raw
+            exit_leg = await self._quote_cached(
+                client,
+                settlement_chain_id,
+                monitor,
+                settlement_apyusd.contract_address,
+                settlement_apxusd.contract_address,
+                settlement_apyusd_raw,
+                quote_cache,
+                allow_reverse_fallback=True,
+                quote_provider=quote_provider,
+            )
+            final_raw = exit_leg.amount_out_raw
+        else:
+            raise ValueError(f"Unsupported arbitrage strategy: {strategy_id}")
+
+        return (
+            start_raw / 10 ** settlement_apxusd.decimals,
+            final_raw / 10 ** settlement_apxusd.decimals,
         )
 
     def _build_sample(
@@ -741,6 +851,8 @@ class ArbitrageCollector(BaseCollector):
         sold_apxusd_amount: float,
         final_apxusd_amount: float,
         final_amount: float,
+        apxusd_loop_start_amount: float,
+        apxusd_loop_final_amount: float,
         first_bridge_cost_usd: float,
         second_bridge_cost_usd: float,
         route_steps: tuple[dict[str, Any], ...],
@@ -751,6 +863,12 @@ class ArbitrageCollector(BaseCollector):
         gas_cost_usd = monitor.source_gas_usd + monitor.target_gas_usd
         total_cost_usd = first_bridge_cost_usd + second_bridge_cost_usd + gas_cost_usd
         net_profit_usd = gross_profit_usd - total_cost_usd
+        apxusd_loop_profit = apxusd_loop_final_amount - apxusd_loop_start_amount
+        apxusd_loop_edge_pct = (
+            apxusd_loop_profit / apxusd_loop_start_amount * 100
+            if apxusd_loop_start_amount
+            else 0.0
+        )
 
         return ArbitrageSample(
             monitor=monitor,
@@ -773,6 +891,10 @@ class ArbitrageCollector(BaseCollector):
             sold_apxusd_amount=sold_apxusd_amount,
             final_apxusd_amount=final_apxusd_amount,
             final_amount=final_amount,
+            apxusd_loop_start_amount=apxusd_loop_start_amount,
+            apxusd_loop_final_amount=apxusd_loop_final_amount,
+            apxusd_loop_profit=apxusd_loop_profit,
+            apxusd_loop_edge_pct=apxusd_loop_edge_pct,
             first_bridge_cost_usd=first_bridge_cost_usd,
             second_bridge_cost_usd=second_bridge_cost_usd,
             gross_profit_usd=gross_profit_usd,
@@ -1457,6 +1579,10 @@ class ArbitrageCollector(BaseCollector):
                 ("final_apxusd", sample.final_apxusd_amount, "tokens"),
                 ("final_usdc", sample.final_amount, "tokens"),
                 ("intermediate_apyusd", sample.bought_apyusd_amount, "tokens"),
+                ("apxusd_loop_start", sample.apxusd_loop_start_amount, "tokens"),
+                ("apxusd_loop_final", sample.apxusd_loop_final_amount, "tokens"),
+                ("apxusd_loop_profit", sample.apxusd_loop_profit, "tokens"),
+                ("apxusd_loop_edge_pct", sample.apxusd_loop_edge_pct, "pct"),
                 ("total_cost_usd", sample.total_cost_usd, "usd"),
             ):
                 metrics.append(
@@ -1479,6 +1605,9 @@ class ArbitrageCollector(BaseCollector):
                 ("best_net_profit_usd", best_sample.net_profit_usd, "usd"),
                 ("best_net_edge_pct", best_sample.net_edge_pct, "pct"),
                 ("best_notional_usd", best_sample.notional_usd, "usd"),
+                ("best_apxusd_loop_final", best_sample.apxusd_loop_final_amount, "tokens"),
+                ("best_apxusd_loop_profit", best_sample.apxusd_loop_profit, "tokens"),
+                ("best_apxusd_loop_edge_pct", best_sample.apxusd_loop_edge_pct, "pct"),
             ):
                 metrics.append(
                     MetricPoint(
@@ -1521,6 +1650,10 @@ class ArbitrageCollector(BaseCollector):
             "sold_apxusd_amount": sample.sold_apxusd_amount,
             "final_apxusd_amount": sample.final_apxusd_amount,
             "final_amount": sample.final_amount,
+            "apxusd_loop_start_amount": sample.apxusd_loop_start_amount,
+            "apxusd_loop_final_amount": sample.apxusd_loop_final_amount,
+            "apxusd_loop_profit": sample.apxusd_loop_profit,
+            "apxusd_loop_edge_pct": sample.apxusd_loop_edge_pct,
             "bridge_fee_bps": sample.monitor.bridge_fee_bps,
             "bridge_fixed_usd": sample.monitor.bridge_fixed_usd,
             "first_bridge_cost_usd": sample.first_bridge_cost_usd,

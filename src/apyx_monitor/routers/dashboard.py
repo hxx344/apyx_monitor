@@ -202,6 +202,11 @@ def _format_value(metric_name: str, value: float | None) -> str:
         "final_apxusd",
         "final_usdc",
         "intermediate_apyusd",
+        "apxusd_loop_start",
+        "apxusd_loop_final",
+        "apxusd_loop_profit",
+        "best_apxusd_loop_final",
+        "best_apxusd_loop_profit",
     }:
         return f"{value:,.4f}"
     if metric_name == "convert_to_assets":
@@ -935,6 +940,9 @@ def _render_arbitrage_section(latest_map: dict[tuple[str, str], MetricSnapshot])
     best_profit = latest_map.get(("arb-apyusd-apxusd-crosschain", "best_net_profit_usd"))
     best_edge = latest_map.get(("arb-apyusd-apxusd-crosschain", "best_net_edge_pct"))
     best_notional = latest_map.get(("arb-apyusd-apxusd-crosschain", "best_notional_usd"))
+    best_apxusd_loop_final = latest_map.get(
+        ("arb-apyusd-apxusd-crosschain", "best_apxusd_loop_final")
+    )
     best_total_cost = None
     best_details = _metric_details(best_profit)
     best_label = best_details.get("strategy_label") or best_details.get("label", "-")
@@ -998,6 +1006,7 @@ def _render_arbitrage_section(latest_map: dict[tuple[str, str], MetricSnapshot])
       <div class="arb-summary">
         <div><span>最佳净利润</span><strong>{escape(_format_value("best_net_profit_usd", best_profit.value if best_profit else None))}</strong></div>
         <div><span>最佳净利率</span><strong>{escape(_format_value("best_net_edge_pct", best_edge.value if best_edge else None))}</strong></div>
+        <div><span>10,000 apxUSD 闭环后</span><strong>{escape(_format_value("best_apxusd_loop_final", best_apxusd_loop_final.value if best_apxusd_loop_final else None))}</strong></div>
         <div><span>闭环总成本</span><strong>{escape(_format_value("total_cost_usd", best_total_cost.value if best_total_cost else None))}</strong></div>
       </div>
       <div class="trend-table-wrap">
@@ -1312,7 +1321,7 @@ def dashboard(
     .panel-actions {{ display: flex; flex-direction: column; align-items: flex-end; gap: 10px; max-width: 72%; }}
     .panel h3 {{ margin: 0; font-size: 16px; }}
     .panel-subtitle {{ margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }}
-    .arb-summary {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }}
+    .arb-summary {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }}
     .arb-summary div {{ padding: 12px; border-radius: 12px; background: rgba(15,23,42,0.55); border: 1px solid rgba(148,163,184,0.12); }}
     .arb-summary span {{ display: block; color: var(--muted); font-size: 12px; margin-bottom: 5px; }}
     .arb-summary strong {{ font-size: 20px; }}

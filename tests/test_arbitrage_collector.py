@@ -615,7 +615,7 @@ async def _run_collect_quote_count_test():
     first_metrics = await collector.collect()
 
     assert first_metrics
-    assert len(collector.quote_calls) == 6
+    assert len(collector.quote_calls) == 8
     assert (
         len(
             [
@@ -654,12 +654,14 @@ async def _run_collect_quote_count_test():
     assert (
         first_best.details["sample_entity_id"] == "arb-ethereum-base-buy-source-sell-target-10000"
     )
+    first_apxusd_loop = _best_apxusd_loop_final_metric(first_metrics)
+    assert first_apxusd_loop.value == 10300
 
     second_metrics = await collector.collect()
 
     assert second_metrics
-    assert len(collector.quote_calls) == 12
-    second_collect_calls = collector.quote_calls[6:]
+    assert len(collector.quote_calls) == 16
+    second_collect_calls = collector.quote_calls[8:]
     assert (
         len(
             [
@@ -1016,19 +1018,19 @@ async def _run_quote_falls_back_to_jumper_when_pendleswap_is_rate_limited_test(m
         {},
     )
 
-    assert [call[0] for call in client.calls] == ["POST", "GET", "GET", "GET"]
+    assert [call[0] for call in client.calls] == ["POST", "GET", "GET", "GET", "GET"]
     assert client.calls[1][1] == "https://li.quest/v1/quote"
     assert client.calls[1][2]["fromChain"] == "1"
     assert client.calls[1][2]["toChain"] == "1"
-    assert client.calls[1][2]["fromToken"] == "usdc"
-    assert client.calls[1][2]["toToken"] == "eth-apy"
+    assert client.calls[3][2]["fromToken"] == "usdc"
+    assert client.calls[3][2]["toToken"] == "eth-apy"
     assert all(call[1] == "https://li.quest/v1/quote" for call in client.calls[1:])
     assert [step["routing"]["provider"] for step in sample.route_steps if step["type"] == "swap"] == [
         "jumper",
         "jumper",
         "jumper",
     ]
-    assert sleep_calls == [4.0, 4.0, 4.0, 4.0]
+    assert sleep_calls == [4.0, 4.0, 4.0, 4.0, 4.0]
     pendle_rate_limit.clear_rate_limit()
     arbitrage_module._quote_provider_cooldowns.clear()
 
@@ -1085,14 +1087,14 @@ async def _run_quote_falls_back_to_jumper_when_pendleswap_times_out_test(monkeyp
         {},
     )
 
-    assert [call[0] for call in client.calls] == ["POST", "GET", "GET", "GET"]
+    assert [call[0] for call in client.calls] == ["POST", "GET", "GET", "GET", "GET"]
     assert all(call[1] == "https://li.quest/v1/quote" for call in client.calls[1:])
     assert [step["routing"]["provider"] for step in sample.route_steps if step["type"] == "swap"] == [
         "jumper",
         "jumper",
         "jumper",
     ]
-    assert sleep_calls == [4.0, 4.0, 4.0, 4.0]
+    assert sleep_calls == [4.0, 4.0, 4.0, 4.0, 4.0]
     pendle_rate_limit.clear_rate_limit()
     arbitrage_module._quote_provider_cooldowns.clear()
 
@@ -1153,20 +1155,20 @@ async def _run_quote_falls_back_to_velora_when_pendleswap_and_jumper_are_rate_li
         {},
     )
 
-    assert [call[0] for call in client.calls] == ["POST", "GET", "GET", "GET", "GET"]
+    assert [call[0] for call in client.calls] == ["POST", "GET", "GET", "GET", "GET", "GET"]
     assert client.calls[1][1] == "https://li.quest/v1/quote"
     assert client.calls[2][1] == "https://api.paraswap.io/prices"
-    assert client.calls[2][2]["srcToken"] == "usdc"
-    assert client.calls[2][2]["destToken"] == "eth-apy"
-    assert client.calls[2][2]["side"] == "SELL"
-    assert client.calls[2][2]["network"] == "1"
+    assert client.calls[4][2]["srcToken"] == "usdc"
+    assert client.calls[4][2]["destToken"] == "eth-apy"
+    assert client.calls[4][2]["side"] == "SELL"
+    assert client.calls[4][2]["network"] == "1"
     assert all(call[1] == "https://api.paraswap.io/prices" for call in client.calls[2:])
     assert [step["routing"]["provider"] for step in sample.route_steps if step["type"] == "swap"] == [
         "velora",
         "velora",
         "velora",
     ]
-    assert sleep_calls == [4.0, 4.0, 4.0, 4.0, 4.0]
+    assert sleep_calls == [4.0, 4.0, 4.0, 4.0, 4.0, 4.0]
     pendle_rate_limit.clear_rate_limit()
     arbitrage_module._quote_provider_cooldowns.clear()
 
@@ -1177,6 +1179,15 @@ def _best_profit_metric(metrics):
         for metric in metrics
         if metric.entity_id == "arb-apyusd-apxusd-crosschain"
         and metric.metric_name == "best_net_profit_usd"
+    )
+
+
+def _best_apxusd_loop_final_metric(metrics):
+    return next(
+        metric
+        for metric in metrics
+        if metric.entity_id == "arb-apyusd-apxusd-crosschain"
+        and metric.metric_name == "best_apxusd_loop_final"
     )
 
 
@@ -1216,6 +1227,10 @@ def _dummy_sample(
         sold_apxusd_amount=10000.0,
         final_apxusd_amount=10000.0,
         final_amount=10000.0 + net_profit_usd,
+        apxusd_loop_start_amount=10000.0,
+        apxusd_loop_final_amount=10000.0 + net_profit_usd,
+        apxusd_loop_profit=net_profit_usd,
+        apxusd_loop_edge_pct=net_profit_usd / 100,
         first_bridge_cost_usd=0.0,
         second_bridge_cost_usd=0.0,
         gross_profit_usd=net_profit_usd,
