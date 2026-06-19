@@ -8,8 +8,10 @@ import httpx
 from apyx_monitor.collectors import arbitrage as arbitrage_module
 from apyx_monitor.collectors import pendle_rate_limit
 from apyx_monitor.collectors.arbitrage import (
+    ARBITRAGE_ENTITY_ID,
     BUY_SOURCE_SELL_TARGET,
     BUY_TARGET_SELL_SOURCE,
+    ArbitrageSample,
     ArbitrageCollector,
     PENDLESWAP_PROVIDER,
     PendleSwapRouteUnavailableError,
@@ -406,6 +408,84 @@ def test_curve_nav_gate_skips_path_calculation_when_deviation_is_stale(monkeypat
     )
 
     assert collector._should_calculate_arbitrage_paths(now) is False
+
+
+def test_forced_collect_bypasses_curve_nav_gate(monkeypatch):
+    asyncio.run(_run_forced_collect_bypasses_curve_nav_gate_test(monkeypatch))
+
+
+def test_stale_cached_best_does_not_get_a_fresh_timestamp():
+    monitor = ArbitrageMonitorDefinition(
+        monitor_id="arb-ethereum-base",
+        label="Ethereum <-> Base",
+        source_chain="ethereum",
+        target_chain="base",
+        funding_asset_id="usdc-ethereum",
+        start_asset_id="apxusd-ethereum",
+        intermediate_asset_id="apyusd-ethereum",
+        final_asset_id="apxusd-base",
+        notionals_usd=[10000],
+    )
+    catalog = _quote_catalog(monitor)
+    collector = ArbitrageCollector(Settings(), catalog)
+    old_recorded_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    new_recorded_at = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    stale_best = _dummy_sample(monitor, "best", 100.0, old_recorded_at)
+    fresh_lower = _dummy_sample(monitor, "fresh", 50.0, new_recorded_at)
+
+    metrics = collector._samples_to_metrics(
+        [fresh_lower],
+        best_candidates=[stale_best, fresh_lower],
+    )
+
+    assert not any(
+        metric.entity_id == ARBITRAGE_ENTITY_ID
+        and metric.metric_name == "best_net_profit_usd"
+        for metric in metrics
+    )
+
+
+async def _run_forced_collect_bypasses_curve_nav_gate_test(monkeypatch):
+    monitor = ArbitrageMonitorDefinition(
+        monitor_id="arb-ethereum-base",
+        label="Ethereum <-> Base",
+        source_chain="ethereum",
+        target_chain="base",
+        funding_asset_id="usdc-ethereum",
+        start_asset_id="apxusd-ethereum",
+        intermediate_asset_id="apyusd-ethereum",
+        final_asset_id="apxusd-base",
+        notionals_usd=[10000],
+    )
+    catalog = AssetCatalog(
+        chains=[
+            ChainDefinition(
+                chain="ethereum", chain_id=1, rpc_url_env="ETH_RPC", default_rpc_url=""
+            ),
+            ChainDefinition(
+                chain="base", chain_id=8453, rpc_url_env="BASE_RPC", default_rpc_url=""
+            ),
+        ],
+        assets=[
+            _asset("usdc-ethereum", "usdc", "USDC", "ethereum", "usdc", 6, enabled=False),
+            _asset("apxusd-ethereum", "apxusd", "apxUSD", "ethereum", "eth-apx"),
+            _asset("apyusd-ethereum", "apyusd", "apyUSD", "ethereum", "eth-apy"),
+            _asset("apxusd-base", "apxusd", "apxUSD", "base", "base-apx"),
+            _asset("apyusd-base", "apyusd", "apyUSD", "base", "base-apy"),
+        ],
+        pendle_markets=[],
+        morpho_markets=[],
+        arbitrage_monitors=[monitor],
+    )
+    collector = MockArbitrageCollector(Settings(), catalog)
+    monkeypatch.setattr(collector, "_should_calculate_arbitrage_paths", lambda now: False)
+
+    gated_metrics = await collector.collect()
+    forced_metrics = await collector.collect(force=True)
+
+    assert gated_metrics == []
+    assert forced_metrics
+    assert collector.quote_calls
 
 
 async def _run_arbitrage_profit_test(
@@ -1029,6 +1109,54 @@ def _best_profit_metric(metrics):
         for metric in metrics
         if metric.entity_id == "arb-apyusd-apxusd-crosschain"
         and metric.metric_name == "best_net_profit_usd"
+    )
+
+
+def _dummy_sample(
+    monitor: ArbitrageMonitorDefinition,
+    strategy_suffix: str,
+    net_profit_usd: float,
+    recorded_at: datetime,
+) -> ArbitrageSample:
+    asset = _asset("usdc-ethereum", "usdc", "USDC", "ethereum", "usdc", 6)
+    quote = SwapQuote(
+        amount_in_raw=1,
+        amount_out_raw=1,
+        min_out_raw=None,
+        token_in="usdc",
+        token_out="usdc",
+        method="mock",
+    )
+    return ArbitrageSample(
+        monitor=monitor,
+        strategy_id=f"strategy-{strategy_suffix}",
+        strategy_label=f"Strategy {strategy_suffix}",
+        settlement_chain="ethereum",
+        remote_chain="base",
+        buy_chain="ethereum",
+        sell_chain="base",
+        start_asset=asset,
+        final_asset=asset,
+        notional_usd=10000.0,
+        start_amount=10000.0,
+        entry_leg=quote,
+        first_leg=quote,
+        second_leg=quote,
+        exit_leg=quote,
+        entry_apxusd_amount=0.0,
+        bought_apyusd_amount=10000.0,
+        sold_apxusd_amount=10000.0,
+        final_apxusd_amount=10000.0,
+        final_amount=10000.0 + net_profit_usd,
+        first_bridge_cost_usd=0.0,
+        second_bridge_cost_usd=0.0,
+        gross_profit_usd=net_profit_usd,
+        net_profit_usd=net_profit_usd,
+        gross_edge_pct=net_profit_usd / 100,
+        net_edge_pct=net_profit_usd / 100,
+        total_cost_usd=0.0,
+        route_steps=(),
+        recorded_at=recorded_at,
     )
 
 

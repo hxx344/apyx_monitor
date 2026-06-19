@@ -29,4 +29,13 @@ def build_scheduler(service: MonitoringService) -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        service.poll_arbitrage_once,
+        "interval",
+        seconds=settings.arbitrage_interval_seconds,
+        id="apyx-monitor-arbitrage-poll",
+        start_date=datetime.now(timezone.utc) + timedelta(seconds=30),
+        max_instances=1,
+        coalesce=True,
+    )
     return scheduler

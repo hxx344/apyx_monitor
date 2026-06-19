@@ -1403,6 +1403,7 @@ def dashboard(
       <form class="actions" method="get" action="/dashboard">
         <select name="hours">{hour_options}</select>
         <button type="submit" id="dashboard-refresh-button">刷新</button>
+        <button type="button" id="arbitrage-refresh-button">刷新套利计算</button>
                 <button type="submit" formmethod="post" formaction="/dashboard/logout">退出</button>
         <div class="status" id="dashboard-status">{escape(status_text)}</div>
       </form>
@@ -1414,6 +1415,7 @@ def dashboard(
         (() => {{
             const refreshForm = document.querySelector('.actions');
             const refreshButton = document.getElementById('dashboard-refresh-button');
+            const arbitrageRefreshButton = document.getElementById('arbitrage-refresh-button');
             const statusNode = document.getElementById('dashboard-status');
             const dataNode = document.getElementById('dashboard-data');
             let refreshInFlight = false;
@@ -1487,6 +1489,7 @@ def dashboard(
                 if (refreshInFlight) return;
                 refreshInFlight = true;
                 refreshButton.disabled = true;
+                arbitrageRefreshButton.disabled = true;
                 const previousStatus = statusNode.textContent;
                 setStatus('刷新中...', 'loading');
                 const hours = refreshForm.querySelector('select[name="hours"]').value;
@@ -1525,7 +1528,46 @@ def dashboard(
                 }} finally {{
                     refreshInFlight = false;
                     refreshButton.disabled = false;
+                    arbitrageRefreshButton.disabled = false;
                 }}
+            }};
+
+            const refreshArbitrage = async () => {{
+                if (refreshInFlight) return;
+                refreshInFlight = true;
+                refreshButton.disabled = true;
+                arbitrageRefreshButton.disabled = true;
+                setStatus('套利计算刷新中...', 'loading');
+
+                try {{
+                    const response = await fetch('/api/v1/jobs/arbitrage', {{
+                        method: 'POST',
+                        headers: {{ 'X-Requested-With': 'fetch' }},
+                        cache: 'no-store',
+                        credentials: 'same-origin',
+                    }});
+                    if (response.redirected || response.status === 401 || response.url.includes('/dashboard/login')) {{
+                        window.location.href = '/dashboard/login?next=' + encodeURIComponent(window.location.pathname + window.location.search);
+                        return;
+                    }}
+                    if (!response.ok) {{
+                        throw new Error(`HTTP ${{response.status}}`);
+                    }}
+                    const result = await response.json();
+                    if (result.status === 'skipped') {{
+                        throw new Error(result.reason || 'poll already in progress');
+                    }}
+                    setStatus('套利计算已触发，刷新看板数据...', 'loading');
+                }} catch (error) {{
+                    setStatus(`套利计算刷新失败：${{error.message}}`, 'error');
+                    return;
+                }} finally {{
+                    refreshInFlight = false;
+                    refreshButton.disabled = false;
+                    arbitrageRefreshButton.disabled = false;
+                }}
+
+                refreshDashboard();
             }};
 
             refreshForm.addEventListener('submit', (event) => {{
@@ -1536,6 +1578,7 @@ def dashboard(
             }});
 
             refreshForm.querySelector('select[name="hours"]').addEventListener('change', refreshDashboard);
+            arbitrageRefreshButton.addEventListener('click', refreshArbitrage);
 
             refreshTimer = window.setInterval(refreshDashboard, 60000);
             window.addEventListener('beforeunload', () => {{

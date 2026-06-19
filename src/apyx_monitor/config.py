@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     )
     collection_interval_seconds: int = Field(default=60, alias="COLLECTION_INTERVAL_SECONDS")
     nav_curve_interval_seconds: int = Field(default=20, alias="NAV_CURVE_INTERVAL_SECONDS")
+    arbitrage_interval_seconds: int = Field(default=600, alias="ARBITRAGE_INTERVAL_SECONDS")
     arbitrage_curve_gate_enabled: bool = Field(default=True, alias="ARBITRAGE_CURVE_GATE_ENABLED")
     arbitrage_curve_gate_max_age_seconds: int = Field(
         default=180, alias="ARBITRAGE_CURVE_GATE_MAX_AGE_SECONDS"

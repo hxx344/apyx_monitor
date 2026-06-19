@@ -52,6 +52,7 @@ uvicorn apyx_monitor.main:app --reload
 - `GET /api/v1/metrics/trends?entity_id=apxusd&metric_name=tvl_usd&hours=24&bucket_minutes=15`
 - `GET /api/v1/alerts?status=firing`
 - `POST /api/v1/jobs/poll`
+- `POST /api/v1/jobs/arbitrage`
 
 ### Dashboard 登录
 
@@ -94,6 +95,7 @@ uvicorn apyx_monitor.main:app --host 0.0.0.0 --port 8000 --workers 1
 - 默认 SQLite 数据库在 `data/apyx_monitor.db`。程序会启用 WAL 和 30 秒 busy timeout，以降低看板查询和后台写入之间的锁冲突。
 - 采集间隔由 `COLLECTION_INTERVAL_SECONDS` 控制，默认每 60 秒采集一次。过低的间隔会增加 RPC/API 压力和数据库写入压力。
 - NAV/Curve 快速扫描由 `NAV_CURVE_INTERVAL_SECONDS` 控制，默认每 20 秒采集一次 `apyUSD convertToAssets()`、Curve `get_dy()` 和偏离净值指标，不会额外请求 Pendle/Morpho。
+- 闭环套利除 Curve/NAV 变化触发外，还会由 `ARBITRAGE_INTERVAL_SECONDS` 定时强制触发一次，默认每 600 秒（10 分钟）执行；看板也提供“刷新套利计算”按钮手动触发。
 - 每次发版后需要重启服务，让数据库 PRAGMA、索引和新代码生效。
 
 ### 启动后检查
@@ -107,6 +109,7 @@ curl http://127.0.0.1:8000/api/v1/metrics/latest
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/jobs/poll
+curl -X POST http://127.0.0.1:8000/api/v1/jobs/arbitrage
 ```
 
 ### 数据增长与清理

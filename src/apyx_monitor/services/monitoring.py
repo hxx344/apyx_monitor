@@ -25,10 +25,11 @@ class MonitoringService:
         self.asset_catalog = get_asset_catalog()
         self.rule_catalog = get_rule_catalog()
         self.onchain_collector = OnChainCollector(self.settings, self.asset_catalog)
+        self.arbitrage_collector = ArbitrageCollector(self.settings, self.asset_catalog)
         self.collectors = [
             self.onchain_collector,
             MorphoCollector(self.settings, self.asset_catalog),
-            ArbitrageCollector(self.settings, self.asset_catalog),
+            self.arbitrage_collector,
         ]
         self.rule_engine = RuleEngine(self.rule_catalog, FeishuNotifier(self.settings))
         self._lock = asyncio.Lock()
@@ -38,6 +39,9 @@ class MonitoringService:
         self.last_nav_curve_run_at: datetime | None = None
         self.last_nav_curve_status: str = "never"
         self.last_nav_curve_errors: dict[str, str] = {}
+        self.last_arbitrage_run_at: datetime | None = None
+        self.last_arbitrage_status: str = "never"
+        self.last_arbitrage_errors: dict[str, str] = {}
 
     async def poll_once(self) -> dict[str, object]:
         if self._lock.locked():
@@ -85,6 +89,32 @@ class MonitoringService:
                 "alerts_touched": len(evaluation.events),
                 "errors": self.last_nav_curve_errors,
                 "last_run_at": self.last_nav_curve_run_at.isoformat(),
+            }
+
+    async def poll_arbitrage_once(self) -> dict[str, object]:
+        if self._lock.locked():
+            return {"status": "skipped", "reason": "poll already in progress"}
+
+        async with self._lock:
+            self.last_arbitrage_errors = {}
+            all_points: list[MetricPoint] = []
+            try:
+                all_points = await self.arbitrage_collector.collect(force=True)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("arbitrage collector failed")
+                self.last_arbitrage_errors["arbitrage"] = str(exc)
+
+            evaluation = await asyncio.to_thread(self._persist_and_evaluate, all_points)
+            await self._send_notifications(evaluation.notifications, self.last_arbitrage_errors)
+
+            self.last_arbitrage_run_at = datetime.now(timezone.utc)
+            self.last_arbitrage_status = "partial_failure" if self.last_arbitrage_errors else "ok"
+            return {
+                "status": self.last_arbitrage_status,
+                "collected_metrics": len(all_points),
+                "alerts_touched": len(evaluation.events),
+                "errors": self.last_arbitrage_errors,
+                "last_run_at": self.last_arbitrage_run_at.isoformat(),
             }
 
     async def _collect_all(self) -> tuple[list[MetricPoint], dict[str, str]]:

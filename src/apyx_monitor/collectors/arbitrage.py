@@ -132,7 +132,7 @@ class ArbitrageCollector(BaseCollector):
             asset.contract_address.lower(): asset.decimals for asset in self.catalog.assets
         }
 
-    async def collect(self) -> list[MetricPoint]:
+    async def collect(self, force: bool = False) -> list[MetricPoint]:
         now = datetime.now(timezone.utc)
 
         asset_map = {asset.asset_id: asset for asset in self.catalog.assets}
@@ -186,7 +186,6 @@ class ArbitrageCollector(BaseCollector):
             return self._samples_to_metrics(
                 samples,
                 best_candidates=list(self._latest_samples.values()),
-                best_recorded_at=now,
             )
 
         selected_index = self._next_monitor_index % len(monitor_contexts)
@@ -205,12 +204,13 @@ class ArbitrageCollector(BaseCollector):
             selected_index + 1,
             len(monitor_contexts),
         )
-        if not self._should_calculate_arbitrage_paths(now):
+        if not force and not self._should_calculate_arbitrage_paths(now):
             return self._samples_to_metrics(
                 samples,
                 best_candidates=list(self._latest_samples.values()),
-                best_recorded_at=now,
             )
+        if force:
+            logger.info("arbitrage collector entering path calculation because refresh was forced")
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             for notional_usd in monitor.notionals_usd:
@@ -241,7 +241,6 @@ class ArbitrageCollector(BaseCollector):
                         return self._samples_to_metrics(
                             samples,
                             best_candidates=list(self._latest_samples.values()),
-                            best_recorded_at=now,
                         )
                     except QuoteRouteUnavailableError as exc:
                         logger.warning(
@@ -267,7 +266,6 @@ class ArbitrageCollector(BaseCollector):
         return self._samples_to_metrics(
             samples,
             best_candidates=list(self._latest_samples.values()),
-            best_recorded_at=now,
         )
 
     async def _sample_monitor(
@@ -1431,14 +1429,11 @@ class ArbitrageCollector(BaseCollector):
         samples: list[ArbitrageSample],
         *,
         best_candidates: list[ArbitrageSample] | None = None,
-        best_recorded_at: datetime | None = None,
     ) -> list[MetricPoint]:
         metrics: list[MetricPoint] = []
         candidates = best_candidates if best_candidates is not None else samples
         best_sample = max(candidates, key=lambda sample: sample.net_profit_usd, default=None)
-        best_metric_recorded_at = best_recorded_at or (
-            best_sample.recorded_at if best_sample is not None else None
-        )
+        fresh_sample_ids = {sample.entity_id for sample in samples}
 
         for sample in samples:
             details = self._sample_details(sample)
@@ -1471,7 +1466,7 @@ class ArbitrageCollector(BaseCollector):
                     )
                 )
 
-        if best_sample is not None:
+        if best_sample is not None and best_sample.entity_id in fresh_sample_ids:
             best_details = self._sample_details(best_sample)
             best_details["sample_entity_id"] = best_sample.entity_id
             for metric_name, value, unit in (
@@ -1487,7 +1482,7 @@ class ArbitrageCollector(BaseCollector):
                         value=float(value),
                         unit=unit,
                         source="pendleswap_sdk",
-                        recorded_at=best_metric_recorded_at or best_sample.recorded_at,
+                        recorded_at=best_sample.recorded_at,
                         details=best_details,
                     )
                 )

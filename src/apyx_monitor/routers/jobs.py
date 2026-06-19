@@ -9,3 +9,9 @@ router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 async def run_poll(request: Request) -> dict:
     service = request.app.state.monitoring_service
     return await service.poll_once()
+
+
+@router.post("/arbitrage")
+async def run_arbitrage_poll(request: Request) -> dict:
+    service = request.app.state.monitoring_service
+    return await service.poll_arbitrage_once()

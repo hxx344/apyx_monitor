@@ -17,4 +17,11 @@ async def healthz(request: Request) -> dict:
             service.last_nav_curve_run_at.isoformat() if service.last_nav_curve_run_at else None
         ),
         "nav_curve_errors": service.last_nav_curve_errors,
+        "arbitrage_status": service.last_arbitrage_status,
+        "arbitrage_last_run_at": (
+            service.last_arbitrage_run_at.isoformat()
+            if service.last_arbitrage_run_at
+            else None
+        ),
+        "arbitrage_errors": service.last_arbitrage_errors,
     }
