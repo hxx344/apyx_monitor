@@ -91,7 +91,11 @@ class MonitoringService:
                 "last_run_at": self.last_nav_curve_run_at.isoformat(),
             }
 
-    async def poll_arbitrage_once(self, wait_for_lock_seconds: float = 120.0) -> dict[str, object]:
+    async def poll_arbitrage_once(
+        self,
+        wait_for_lock_seconds: float = 120.0,
+        force_new_cycle: bool = False,
+    ) -> dict[str, object]:
         if self._lock.locked():
             logger.info(
                 "闭环套利刷新等待中 │ 原因=已有采集任务正在运行 │ 最长等待=%.0f秒",
@@ -111,7 +115,10 @@ class MonitoringService:
             self.last_arbitrage_errors = {}
             all_points: list[MetricPoint] = []
             try:
-                all_points = await self.arbitrage_collector.collect(force=True)
+                all_points = await self.arbitrage_collector.collect(
+                    force=True,
+                    reset_refresh_cycle=force_new_cycle,
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("闭环套利采集失败")
                 self.last_arbitrage_errors["arbitrage"] = str(exc)

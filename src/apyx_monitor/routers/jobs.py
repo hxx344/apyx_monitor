@@ -14,4 +14,4 @@ async def run_poll(request: Request) -> dict:
 @router.post("/arbitrage")
 async def run_arbitrage_poll(request: Request) -> dict:
     service = request.app.state.monitoring_service
-    return await service.poll_arbitrage_once()
+    return await service.poll_arbitrage_once(force_new_cycle=True)

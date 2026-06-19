@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from ..config import get_settings
+from ..collectors.arbitrage import ARBITRAGE_REFRESH_STAGE_SECONDS
 from .monitoring import MonitoringService
 
 
@@ -32,7 +33,7 @@ def build_scheduler(service: MonitoringService) -> AsyncIOScheduler:
     scheduler.add_job(
         service.poll_arbitrage_once,
         "interval",
-        seconds=settings.arbitrage_interval_seconds,
+        seconds=min(settings.arbitrage_interval_seconds, ARBITRAGE_REFRESH_STAGE_SECONDS),
         id="apyx-monitor-arbitrage-poll",
         start_date=datetime.now(timezone.utc) + timedelta(seconds=45),
         max_instances=1,

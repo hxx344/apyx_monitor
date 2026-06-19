@@ -15,7 +15,7 @@ async def _run_arbitrage_poll_waits_for_active_collection_lock_test():
         def __init__(self) -> None:
             self.called = False
 
-        async def collect(self, force: bool = False):
+        async def collect(self, force: bool = False, reset_refresh_cycle: bool = False):
             self.called = force
             return []
 

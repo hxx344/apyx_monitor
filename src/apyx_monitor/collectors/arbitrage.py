@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -31,6 +31,7 @@ JUMPER_PROVIDER = "jumper"
 VELORA_PROVIDER = "velora"
 QUOTE_PROVIDERS = (PENDLESWAP_PROVIDER, JUMPER_PROVIDER, VELORA_PROVIDER)
 QUOTE_PROVIDER_COOLDOWN_SECONDS = 600.0
+ARBITRAGE_REFRESH_STAGE_SECONDS = 60
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +80,22 @@ class SwapQuote:
 QuoteCache = dict[tuple[int, str, str, int, float, str, tuple[str, ...]], SwapQuote]
 
 
+@dataclass
+class ArbitrageRefreshCycle:
+    monitor_id: str
+    notional_usd: float
+    started_at: datetime
+    stage_index: int = 0
+    quote_cache: QuoteCache = field(default_factory=dict)
+    samples: dict[str, "ArbitrageSample"] = field(default_factory=dict)
+
+
 @dataclass(frozen=True)
 class ArbitrageSample:
     monitor: ArbitrageMonitorDefinition
     strategy_id: str
     strategy_label: str
+    quote_provider: str
     settlement_chain: str
     remote_chain: str
     buy_chain: str
@@ -133,12 +145,21 @@ class ArbitrageCollector(BaseCollector):
         self.catalog = catalog
         self._next_monitor_index = 0
         self._latest_samples: dict[str, ArbitrageSample] = {}
+        self._active_refresh_cycle: ArbitrageRefreshCycle | None = None
+        self._next_refresh_cycle_start_at: datetime | None = None
         self._asset_decimals_by_address = {
             asset.contract_address.lower(): asset.decimals for asset in self.catalog.assets
         }
 
-    async def collect(self, force: bool = False) -> list[MetricPoint]:
+    async def collect(
+        self,
+        force: bool = False,
+        reset_refresh_cycle: bool = False,
+    ) -> list[MetricPoint]:
         now = datetime.now(timezone.utc)
+        if reset_refresh_cycle:
+            self._active_refresh_cycle = None
+            self._next_refresh_cycle_start_at = None
 
         asset_map = {asset.asset_id: asset for asset in self.catalog.assets}
         chain_id_map = {chain.chain: chain.chain_id for chain in self.catalog.chains}
@@ -172,7 +193,7 @@ class ArbitrageCollector(BaseCollector):
                 [funding_asset, settlement_apxusd, settlement_apyusd, remote_apxusd, remote_apyusd]
             ):
                 logger.warning(
-                    "跳过套利路径 │ 原因=资产配置缺失 │ 路径=%s",
+                    "璺宠繃濂楀埄璺緞 鈹?鍘熷洜=璧勪骇閰嶇疆缂哄け 鈹?璺緞=%s",
                     monitor.monitor_id,
                 )
                 continue
@@ -193,8 +214,74 @@ class ArbitrageCollector(BaseCollector):
                 best_candidates=list(self._latest_samples.values()),
             )
 
-        selected_index = self._next_monitor_index % len(monitor_contexts)
-        self._next_monitor_index = (selected_index + 1) % len(monitor_contexts)
+        return await self._collect_staged_refresh(
+            now,
+            force,
+            monitor_contexts,
+            chain_id_map,
+            timeout,
+        )
+
+    async def _collect_staged_refresh(
+        self,
+        now: datetime,
+        force: bool,
+        monitor_contexts: list[
+            tuple[
+                ArbitrageMonitorDefinition,
+                AssetDefinition,
+                AssetDefinition,
+                AssetDefinition,
+                AssetDefinition,
+                AssetDefinition,
+            ]
+        ],
+        chain_id_map: dict[str, int],
+        timeout: httpx.Timeout,
+    ) -> list[MetricPoint]:
+        samples: list[ArbitrageSample] = []
+        if self._active_refresh_cycle is None:
+            if (
+                force
+                and self._next_refresh_cycle_start_at is not None
+                and now < self._next_refresh_cycle_start_at
+            ):
+                return self._samples_to_metrics(
+                    samples,
+                    best_candidates=list(self._latest_samples.values()),
+                )
+            if not force and not self._should_calculate_arbitrage_paths(now):
+                return self._samples_to_metrics(
+                    samples,
+                    best_candidates=list(self._latest_samples.values()),
+                )
+
+            selected_index = self._next_monitor_index % len(monitor_contexts)
+            self._next_monitor_index = (selected_index + 1) % len(monitor_contexts)
+            monitor = monitor_contexts[selected_index][0]
+            notional_usd = float(monitor.notionals_usd[0]) if monitor.notionals_usd else 0.0
+            self._active_refresh_cycle = ArbitrageRefreshCycle(
+                monitor_id=monitor.monitor_id,
+                notional_usd=notional_usd,
+                started_at=now,
+            )
+            logger.info(
+                "寮€濮嬪垎闃舵鍒锋柊濂楀埄璺緞 鈹?璺緞=%s 鈹?闃舵=1/3 鈹?杩涘害=%s/%s",
+                monitor.monitor_id,
+                selected_index + 1,
+                len(monitor_contexts),
+            )
+
+        cycle = self._active_refresh_cycle
+        context_by_monitor_id = {context[0].monitor_id: context for context in monitor_contexts}
+        context = context_by_monitor_id.get(cycle.monitor_id)
+        if context is None:
+            self._active_refresh_cycle = None
+            return self._samples_to_metrics(
+                samples,
+                best_candidates=list(self._latest_samples.values()),
+            )
+
         (
             monitor,
             funding_asset,
@@ -202,74 +289,150 @@ class ArbitrageCollector(BaseCollector):
             settlement_apyusd,
             remote_apxusd,
             remote_apyusd,
-        ) = monitor_contexts[selected_index]
-        logger.info(
-            "采样套利路径 │ 路径=%s │ 进度=%s/%s",
-            monitor.monitor_id,
-            selected_index + 1,
-            len(monitor_contexts),
-        )
-        if not force and not self._should_calculate_arbitrage_paths(now):
-            return self._samples_to_metrics(
-                samples,
-                best_candidates=list(self._latest_samples.values()),
-            )
-        if force:
-            logger.info("开始计算套利路径 │ 触发=定时/手动强制刷新 │ Curve gate=已绕过")
+        ) = context
 
         async with httpx.AsyncClient(timeout=timeout) as client:
-            for notional_usd in monitor.notionals_usd:
-                for strategy_id in (BUY_SOURCE_SELL_TARGET, BUY_TARGET_SELL_SOURCE):
-                    try:
-                        sample = await self._sample_monitor(
+            if cycle.stage_index in (0, 1):
+                strategy_id = (
+                    BUY_SOURCE_SELL_TARGET
+                    if cycle.stage_index == 0
+                    else BUY_TARGET_SELL_SOURCE
+                )
+                logger.info(
+                    "鍒嗛樁娈靛埛鏂板鍒╄矾寰?鈹?璺緞=%s 鈹?闃舵=%s/3 鈹?绛栫暐=%s 鈹?API棰勭畻=3",
+                    monitor.monitor_id,
+                    cycle.stage_index + 1,
+                    strategy_id,
+                )
+                try:
+                    sample = await self._sample_monitor(
+                        client,
+                        monitor,
+                        chain_id_map,
+                        funding_asset,
+                        settlement_apxusd,
+                        settlement_apyusd,
+                        remote_apxusd,
+                        remote_apyusd,
+                        strategy_id,
+                        cycle.notional_usd,
+                        cycle.quote_cache,
+                        calculate_apxusd_loop=False,
+                    )
+                except QuoteRateLimitedError as exc:
+                    logger.warning(
+                        "濂楀埄鎶ヤ环鏆傚仠 鈹?鍘熷洜=鍏ㄩ儴鎶ヤ环婧愰檺娴?鈹?璺緞=%s 鈹?绛栫暐=%s 鈹?鏈噾=$%s 鈹?璇︽儏=%s",
+                        monitor.monitor_id,
+                        strategy_id,
+                        cycle.notional_usd,
+                        exc,
+                    )
+                    return self._samples_to_metrics(
+                        samples,
+                        best_candidates=list(self._latest_samples.values()),
+                    )
+                except QuoteRouteUnavailableError as exc:
+                    logger.warning(
+                        "璺宠繃濂楀埄鏍锋湰 鈹?鍘熷洜=鎶ヤ环璺緞涓嶅彲鐢?鈹?璺緞=%s 鈹?绛栫暐=%s 鈹?鏈噾=$%s 鈹?璇︽儏=%s",
+                        monitor.monitor_id,
+                        strategy_id,
+                        cycle.notional_usd,
+                        exc,
+                    )
+                    cycle.stage_index += 1
+                    return self._samples_to_metrics(
+                        samples,
+                        best_candidates=list(self._latest_samples.values()),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "濂楀埄鏍锋湰璁＄畻澶辫触 鈹?璺緞=%s 鈹?绛栫暐=%s 鈹?鏈噾=$%s",
+                        monitor.monitor_id,
+                        strategy_id,
+                        cycle.notional_usd,
+                    )
+                    cycle.stage_index += 1
+                    return self._samples_to_metrics(
+                        samples,
+                        best_candidates=list(self._latest_samples.values()),
+                    )
+
+                cycle.samples[strategy_id] = sample
+                self._latest_samples[sample.entity_id] = sample
+                cycle.stage_index += 1
+                samples = list(cycle.samples.values())
+
+            elif cycle.stage_index == 2:
+                best_sample = max(
+                    cycle.samples.values(),
+                    key=lambda sample: sample.net_profit_usd,
+                    default=None,
+                )
+                if best_sample is None:
+                    self._finish_refresh_cycle(now)
+                    return self._samples_to_metrics(
+                        samples,
+                        best_candidates=list(self._latest_samples.values()),
+                    )
+                logger.info(
+                    "鍒嗛樁娈靛埛鏂板鍒╄矾寰?鈹?璺緞=%s 鈹?闃舵=3/3 鈹?绛栫暐=%s 鈹?API棰勭畻=1",
+                    monitor.monitor_id,
+                    best_sample.strategy_id,
+                )
+                try:
+                    apxusd_loop_start_amount, apxusd_loop_final_amount = (
+                        await self._sample_apxusd_loop(
                             client,
-                            monitor,
+                            best_sample.monitor,
                             chain_id_map,
-                            funding_asset,
                             settlement_apxusd,
                             settlement_apyusd,
                             remote_apxusd,
                             remote_apyusd,
-                            strategy_id,
-                            float(notional_usd),
-                            quote_cache,
+                            best_sample.strategy_id,
+                            cycle.quote_cache,
+                            best_sample.quote_provider,
                         )
-                    except QuoteRateLimitedError as exc:
-                        logger.warning(
-                            "套利报价暂停 │ 原因=全部报价源限流 │ 路径=%s │ 策略=%s │ 本金=$%s │ 详情=%s",
-                            monitor.monitor_id,
-                            strategy_id,
-                            notional_usd,
-                            exc,
-                        )
-                        return self._samples_to_metrics(
-                            samples,
-                            best_candidates=list(self._latest_samples.values()),
-                        )
-                    except QuoteRouteUnavailableError as exc:
-                        logger.warning(
-                            "跳过套利样本 │ 原因=报价路径不可用 │ 路径=%s │ 策略=%s │ 本金=$%s │ 详情=%s",
-                            monitor.monitor_id,
-                            strategy_id,
-                            notional_usd,
-                            exc,
-                        )
-                        continue
-                    except Exception:  # noqa: BLE001
-                        logger.exception(
-                            "套利样本计算失败 │ 路径=%s │ 策略=%s │ 本金=$%s",
-                            monitor.monitor_id,
-                            strategy_id,
-                            notional_usd,
-                        )
-                        continue
-                    samples.append(sample)
-                    self._latest_samples[sample.entity_id] = sample
+                    )
+                except QuoteRateLimitedError as exc:
+                    logger.warning(
+                        "濂楀埄鎶ヤ环鏆傚仠 鈹?鍘熷洜=apxUSD闂幆鎶ヤ环闄愭祦 鈹?璺緞=%s 鈹?绛栫暐=%s 鈹?璇︽儏=%s",
+                        monitor.monitor_id,
+                        best_sample.strategy_id,
+                        exc,
+                    )
+                    return self._samples_to_metrics(
+                        samples,
+                        best_candidates=list(self._latest_samples.values()),
+                    )
+
+                enriched_sample = self._with_apxusd_loop(
+                    best_sample,
+                    apxusd_loop_start_amount,
+                    apxusd_loop_final_amount,
+                )
+                cycle.samples[best_sample.strategy_id] = enriched_sample
+                self._latest_samples[enriched_sample.entity_id] = enriched_sample
+                samples = list(cycle.samples.values())
+                self._finish_refresh_cycle(now)
 
         return self._samples_to_metrics(
             samples,
             best_candidates=list(self._latest_samples.values()),
         )
+
+    def _finish_refresh_cycle(self, now: datetime) -> None:
+        cycle = self._active_refresh_cycle
+        if cycle is None:
+            return
+        self._active_refresh_cycle = None
+        interval_seconds = max(
+            self.settings.arbitrage_interval_seconds,
+            ARBITRAGE_REFRESH_STAGE_SECONDS * 3,
+        )
+        self._next_refresh_cycle_start_at = cycle.started_at + timedelta(seconds=interval_seconds)
+        if self._next_refresh_cycle_start_at < now:
+            self._next_refresh_cycle_start_at = now
 
     async def _sample_monitor(
         self,
@@ -284,6 +447,7 @@ class ArbitrageCollector(BaseCollector):
         strategy_id: str,
         notional_usd: float,
         quote_cache: QuoteCache | None = None,
+        calculate_apxusd_loop: bool = True,
     ) -> ArbitrageSample:
         route_failures: list[str] = []
         rate_limit_failures: list[str] = []
@@ -312,6 +476,7 @@ class ArbitrageCollector(BaseCollector):
                     notional_usd,
                     quote_cache,
                     quote_provider,
+                    calculate_apxusd_loop,
                 )
             except QuoteRateLimitedError as exc:
                 retry_after = exc.retry_after_seconds or QUOTE_PROVIDER_COOLDOWN_SECONDS
@@ -328,7 +493,7 @@ class ArbitrageCollector(BaseCollector):
                 continue
             except QuoteRouteUnavailableError as exc:
                 logger.info(
-                    "报价路径不可用 │ 来源=%s │ 动作=切换下一个来源重试 │ 详情=%s",
+                    "鎶ヤ环璺緞涓嶅彲鐢?鈹?鏉ユ簮=%s 鈹?鍔ㄤ綔=鍒囨崲涓嬩竴涓潵婧愰噸璇?鈹?璇︽儏=%s",
                     quote_provider,
                     exc,
                 )
@@ -355,6 +520,7 @@ class ArbitrageCollector(BaseCollector):
         notional_usd: float,
         quote_cache: QuoteCache | None,
         quote_provider: str,
+        calculate_apxusd_loop: bool,
     ) -> ArbitrageSample:
         if strategy_id == BUY_SOURCE_SELL_TARGET:
             return await self._sample_buy_source_sell_target(
@@ -369,6 +535,7 @@ class ArbitrageCollector(BaseCollector):
                 notional_usd,
                 quote_cache,
                 quote_provider,
+                calculate_apxusd_loop,
             )
         if strategy_id == BUY_TARGET_SELL_SOURCE:
             return await self._sample_buy_target_sell_source(
@@ -383,6 +550,7 @@ class ArbitrageCollector(BaseCollector):
                 notional_usd,
                 quote_cache,
                 quote_provider,
+                calculate_apxusd_loop,
             )
         raise ValueError(f"Unsupported arbitrage strategy: {strategy_id}")
 
@@ -399,6 +567,7 @@ class ArbitrageCollector(BaseCollector):
         notional_usd: float,
         quote_cache: QuoteCache | None,
         quote_provider: str,
+        calculate_apxusd_loop: bool,
     ) -> ArbitrageSample:
         recorded_at = datetime.now(timezone.utc)
         settlement_chain_id = chain_id_map[monitor.source_chain]
@@ -452,18 +621,22 @@ class ArbitrageCollector(BaseCollector):
             quote_provider=quote_provider,
         )
         final_amount = exit_leg.amount_out_raw / 10 ** funding_asset.decimals
-        apxusd_loop_start_amount, apxusd_loop_final_amount = await self._sample_apxusd_loop(
-            client,
-            monitor,
-            chain_id_map,
-            settlement_apxusd,
-            settlement_apyusd,
-            remote_apxusd,
-            remote_apyusd,
-            BUY_SOURCE_SELL_TARGET,
-            quote_cache,
-            quote_provider,
-        )
+        if calculate_apxusd_loop:
+            apxusd_loop_start_amount, apxusd_loop_final_amount = await self._sample_apxusd_loop(
+                client,
+                monitor,
+                chain_id_map,
+                settlement_apxusd,
+                settlement_apyusd,
+                remote_apxusd,
+                remote_apyusd,
+                BUY_SOURCE_SELL_TARGET,
+                quote_cache,
+                quote_provider,
+            )
+        else:
+            apxusd_loop_start_amount = 0.0
+            apxusd_loop_final_amount = 0.0
         first_bridge_cost_usd = self._bridge_cost_usd(
             bought_apyusd_amount,
             settlement_apyusd,
@@ -539,9 +712,10 @@ class ArbitrageCollector(BaseCollector):
             monitor=monitor,
             strategy_id=BUY_SOURCE_SELL_TARGET,
             strategy_label=(
-                f"{self._display_chain(monitor.source_chain)} 买 apyUSD → "
-                f"{self._display_chain(monitor.target_chain)} 卖 apyUSD"
+                f"{self._display_chain(monitor.source_chain)} 涔?apyUSD 鈫?"
+                f"{self._display_chain(monitor.target_chain)} 鍗?apyUSD"
             ),
+            quote_provider=quote_provider,
             settlement_chain=monitor.source_chain,
             remote_chain=monitor.target_chain,
             buy_chain=monitor.source_chain,
@@ -580,6 +754,7 @@ class ArbitrageCollector(BaseCollector):
         notional_usd: float,
         quote_cache: QuoteCache | None,
         quote_provider: str,
+        calculate_apxusd_loop: bool,
     ) -> ArbitrageSample:
         recorded_at = datetime.now(timezone.utc)
         settlement_chain_id = chain_id_map[monitor.source_chain]
@@ -636,18 +811,22 @@ class ArbitrageCollector(BaseCollector):
             quote_provider=quote_provider,
         )
         final_amount = exit_leg.amount_out_raw / 10 ** funding_asset.decimals
-        apxusd_loop_start_amount, apxusd_loop_final_amount = await self._sample_apxusd_loop(
-            client,
-            monitor,
-            chain_id_map,
-            settlement_apxusd,
-            settlement_apyusd,
-            remote_apxusd,
-            remote_apyusd,
-            BUY_TARGET_SELL_SOURCE,
-            quote_cache,
-            quote_provider,
-        )
+        if calculate_apxusd_loop:
+            apxusd_loop_start_amount, apxusd_loop_final_amount = await self._sample_apxusd_loop(
+                client,
+                monitor,
+                chain_id_map,
+                settlement_apxusd,
+                settlement_apyusd,
+                remote_apxusd,
+                remote_apyusd,
+                BUY_TARGET_SELL_SOURCE,
+                quote_cache,
+                quote_provider,
+            )
+        else:
+            apxusd_loop_start_amount = 0.0
+            apxusd_loop_final_amount = 0.0
         first_bridge_cost_usd = self._bridge_cost_usd(
             entry_apxusd_amount,
             settlement_apxusd,
@@ -723,9 +902,10 @@ class ArbitrageCollector(BaseCollector):
             monitor=monitor,
             strategy_id=BUY_TARGET_SELL_SOURCE,
             strategy_label=(
-                f"{self._display_chain(monitor.target_chain)} 买 apyUSD → "
-                f"{self._display_chain(monitor.source_chain)} 卖 apyUSD"
+                f"{self._display_chain(monitor.target_chain)} 涔?apyUSD 鈫?"
+                f"{self._display_chain(monitor.source_chain)} 鍗?apyUSD"
             ),
+            quote_provider=quote_provider,
             settlement_chain=monitor.source_chain,
             remote_chain=monitor.target_chain,
             buy_chain=monitor.target_chain,
@@ -825,12 +1005,33 @@ class ArbitrageCollector(BaseCollector):
             final_raw / 10 ** final_decimals,
         )
 
+    @staticmethod
+    def _with_apxusd_loop(
+        sample: ArbitrageSample,
+        apxusd_loop_start_amount: float,
+        apxusd_loop_final_amount: float,
+    ) -> ArbitrageSample:
+        apxusd_loop_profit = apxusd_loop_final_amount - apxusd_loop_start_amount
+        apxusd_loop_edge_pct = (
+            apxusd_loop_profit / apxusd_loop_start_amount * 100
+            if apxusd_loop_start_amount
+            else 0.0
+        )
+        return replace(
+            sample,
+            apxusd_loop_start_amount=apxusd_loop_start_amount,
+            apxusd_loop_final_amount=apxusd_loop_final_amount,
+            apxusd_loop_profit=apxusd_loop_profit,
+            apxusd_loop_edge_pct=apxusd_loop_edge_pct,
+        )
+
     def _build_sample(
         self,
         *,
         monitor: ArbitrageMonitorDefinition,
         strategy_id: str,
         strategy_label: str,
+        quote_provider: str,
         settlement_chain: str,
         remote_chain: str,
         buy_chain: str,
@@ -871,6 +1072,7 @@ class ArbitrageCollector(BaseCollector):
             monitor=monitor,
             strategy_id=strategy_id,
             strategy_label=strategy_label,
+            quote_provider=quote_provider,
             settlement_chain=settlement_chain,
             remote_chain=remote_chain,
             buy_chain=buy_chain,
@@ -988,7 +1190,7 @@ class ArbitrageCollector(BaseCollector):
             response = await client.post(f"{PENDLE_SDK_BASE_URL}/{chain_id}/convert", json=payload)
         except httpx.TimeoutException as exc:
             raise QuoteRouteUnavailableError(
-                f"PendleSwap 报价超时: chain={chain_id} token_in={token_in} token_out={token_out}"
+                f"PendleSwap 鎶ヤ环瓒呮椂: chain={chain_id} token_in={token_in} token_out={token_out}"
             ) from exc
         if response.status_code == 429:
             retry_after = (
@@ -1046,7 +1248,7 @@ class ArbitrageCollector(BaseCollector):
             response = await client.get(JUMPER_QUOTE_URL, params=params)
         except httpx.TimeoutException as exc:
             raise QuoteRouteUnavailableError(
-                f"Jumper 报价超时: chain={chain_id} token_in={token_in} token_out={token_out}"
+                f"Jumper 鎶ヤ环瓒呮椂: chain={chain_id} token_in={token_in} token_out={token_out}"
             ) from exc
         if response.status_code == 429:
             retry_after = self._retry_after_seconds(response) or QUOTE_PROVIDER_COOLDOWN_SECONDS
@@ -1107,7 +1309,7 @@ class ArbitrageCollector(BaseCollector):
             response = await client.get(VELORA_PRICE_URL, params=params)
         except httpx.TimeoutException as exc:
             raise QuoteRouteUnavailableError(
-                f"Velora 报价超时: chain={chain_id} token_in={token_in} token_out={token_out}"
+                f"Velora 鎶ヤ环瓒呮椂: chain={chain_id} token_in={token_in} token_out={token_out}"
             ) from exc
         if response.status_code == 429:
             retry_after = self._retry_after_seconds(response) or QUOTE_PROVIDER_COOLDOWN_SECONDS
@@ -1259,7 +1461,7 @@ class ArbitrageCollector(BaseCollector):
 
         amount_out_raw = amount_in_raw * reverse_quote.amount_in_raw // reverse_quote.amount_out_raw
         logger.warning(
-            "使用反向报价兜底 │ 交易=%s -> %s │ 链=%s │ 原状态=%s",
+            "浣跨敤鍙嶅悜鎶ヤ环鍏滃簳 鈹?浜ゆ槗=%s -> %s 鈹?閾?%s 鈹?鍘熺姸鎬?%s",
             token_in,
             token_out,
             chain_id,
@@ -1482,9 +1684,7 @@ class ArbitrageCollector(BaseCollector):
 
         snapshots = self._latest_curve_nav_deviation_snapshots(limit=10)
         if not snapshots:
-            logger.info(
-                "暂不计算套利路径 │ 原因=暂无 Curve/NAV 偏离数据"
-            )
+            logger.info("暂不计算套利路径 │ 原因=暂无 Curve/NAV 偏离数据")
             return False
 
         latest = snapshots[0]
@@ -1562,7 +1762,7 @@ class ArbitrageCollector(BaseCollector):
 
         for sample in samples:
             details = self._sample_details(sample)
-            for metric_name, value, unit in (
+            sample_metrics = [
                 ("gross_profit_usd", sample.gross_profit_usd, "usd"),
                 ("net_profit_usd", sample.net_profit_usd, "usd"),
                 ("gross_edge_pct", sample.gross_edge_pct, "pct"),
@@ -1576,12 +1776,18 @@ class ArbitrageCollector(BaseCollector):
                 ("final_apxusd", sample.final_apxusd_amount, "tokens"),
                 ("final_usdc", sample.final_amount, "tokens"),
                 ("intermediate_apyusd", sample.bought_apyusd_amount, "tokens"),
+                ("total_cost_usd", sample.total_cost_usd, "usd"),
+            ]
+            if sample.apxusd_loop_start_amount:
+                sample_metrics.extend(
+                    [
                 ("apxusd_loop_start", sample.apxusd_loop_start_amount, "tokens"),
                 ("apxusd_loop_final", sample.apxusd_loop_final_amount, "tokens"),
                 ("apxusd_loop_profit", sample.apxusd_loop_profit, "tokens"),
                 ("apxusd_loop_edge_pct", sample.apxusd_loop_edge_pct, "pct"),
-                ("total_cost_usd", sample.total_cost_usd, "usd"),
-            ):
+                    ]
+                )
+            for metric_name, value, unit in sample_metrics:
                 metrics.append(
                     MetricPoint(
                         entity_id=sample.entity_id,
@@ -1598,14 +1804,20 @@ class ArbitrageCollector(BaseCollector):
         if best_sample is not None and best_sample.entity_id in fresh_sample_ids:
             best_details = self._sample_details(best_sample)
             best_details["sample_entity_id"] = best_sample.entity_id
-            for metric_name, value, unit in (
+            best_metrics = [
                 ("best_net_profit_usd", best_sample.net_profit_usd, "usd"),
                 ("best_net_edge_pct", best_sample.net_edge_pct, "pct"),
                 ("best_notional_usd", best_sample.notional_usd, "usd"),
-                ("best_apxusd_loop_final", best_sample.apxusd_loop_final_amount, "tokens"),
-                ("best_apxusd_loop_profit", best_sample.apxusd_loop_profit, "tokens"),
-                ("best_apxusd_loop_edge_pct", best_sample.apxusd_loop_edge_pct, "pct"),
-            ):
+            ]
+            if best_sample.apxusd_loop_start_amount:
+                best_metrics.extend(
+                    [
+                        ("best_apxusd_loop_final", best_sample.apxusd_loop_final_amount, "tokens"),
+                        ("best_apxusd_loop_profit", best_sample.apxusd_loop_profit, "tokens"),
+                        ("best_apxusd_loop_edge_pct", best_sample.apxusd_loop_edge_pct, "pct"),
+                    ]
+                )
+            for metric_name, value, unit in best_metrics:
                 metrics.append(
                     MetricPoint(
                         entity_id=ARBITRAGE_ENTITY_ID,
@@ -1632,6 +1844,7 @@ class ArbitrageCollector(BaseCollector):
             "target_chain": sample.monitor.target_chain,
             "strategy_id": sample.strategy_id,
             "strategy_label": sample.strategy_label,
+            "quote_provider": sample.quote_provider,
             "settlement_chain": sample.settlement_chain,
             "remote_chain": sample.remote_chain,
             "buy_chain": sample.buy_chain,

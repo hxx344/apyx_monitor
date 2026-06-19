@@ -622,33 +622,13 @@ async def _run_collect_quote_count_test():
     first_metrics = await collector.collect()
 
     assert first_metrics
-    assert len(collector.quote_calls) == 8
+    assert len(collector.quote_calls) == 3
     assert (
         len(
             [
                 call
                 for call in collector.quote_calls
                 if call[1:] == ("usdc", "eth-apy", 10_000_000_000)
-            ]
-        )
-        == 1
-    )
-    assert (
-        len(
-            [
-                call
-                for call in collector.quote_calls
-                if call[1] == "eth-apx" and call[2] == "usdc"
-            ]
-        )
-        == 1
-    )
-    assert (
-        len(
-            [
-                call
-                for call in collector.quote_calls
-                if call[1] == "eth-apy" and call[2] == "usdc"
             ]
         )
         == 1
@@ -661,14 +641,12 @@ async def _run_collect_quote_count_test():
     assert (
         first_best.details["sample_entity_id"] == "arb-ethereum-base-buy-source-sell-target-10000"
     )
-    first_apxusd_loop = _best_apxusd_loop_final_metric(first_metrics)
-    assert first_apxusd_loop.value == 10300
 
     second_metrics = await collector.collect()
 
     assert second_metrics
-    assert len(collector.quote_calls) == 16
-    second_collect_calls = collector.quote_calls[8:]
+    assert len(collector.quote_calls) == 6
+    second_collect_calls = collector.quote_calls[3:]
     assert (
         len(
             [
@@ -677,15 +655,25 @@ async def _run_collect_quote_count_test():
                 if call[1:] == ("usdc", "eth-apy", 10_000_000_000)
             ]
         )
-        == 1
+        == 0
     )
-    assert [call for call in second_collect_calls if call[1].startswith("bsc-")]
-    assert not [call for call in second_collect_calls if call[1].startswith("base-")]
+    assert [call for call in second_collect_calls if call[1] == "eth-apy" and call[2] == "usdc"]
+    assert [call for call in second_collect_calls if call[1].startswith("base-")]
+    assert not [call for call in second_collect_calls if call[1].startswith("bsc-")]
 
     second_best = _best_profit_metric(second_metrics)
     assert (
-        second_best.details["sample_entity_id"] == "arb-ethereum-bsc-buy-source-sell-target-10000"
+        second_best.details["sample_entity_id"] == "arb-ethereum-base-buy-source-sell-target-10000"
     )
+
+    third_metrics = await collector.collect()
+
+    assert third_metrics
+    assert len(collector.quote_calls) == 7
+    third_collect_calls = collector.quote_calls[6:]
+    assert third_collect_calls == [(1, "eth-apx", "eth-apy", 10_000 * 10**18)]
+    third_apxusd_loop = _best_apxusd_loop_final_metric(third_metrics)
+    assert third_apxusd_loop.value == 10300
 
 
 async def _run_remote_buy_fallback_test():
@@ -1217,6 +1205,7 @@ def _dummy_sample(
         monitor=monitor,
         strategy_id=f"strategy-{strategy_suffix}",
         strategy_label=f"Strategy {strategy_suffix}",
+        quote_provider=PENDLESWAP_PROVIDER,
         settlement_chain="ethereum",
         remote_chain="base",
         buy_chain="ethereum",
