@@ -62,17 +62,24 @@ class MorphoCollector(BaseCollector):
             for market in self.catalog.morpho_markets:
                 if not market.enabled:
                     continue
-                response = await client.post(
-                    self.graphql_url,
-                    json={
-                        "query": MORPHO_MARKET_QUERY,
-                        "variables": {
-                            "marketId": market.morpho_market_id,
-                            "chainId": market.chain_id,
+                try:
+                    response = await client.post(
+                        self.graphql_url,
+                        json={
+                            "query": MORPHO_MARKET_QUERY,
+                            "variables": {
+                                "marketId": market.morpho_market_id,
+                                "chainId": market.chain_id,
+                            },
                         },
-                    },
-                )
-                response.raise_for_status()
+                    )
+                    response.raise_for_status()
+                except httpx.TimeoutException as exc:
+                    logger.warning("跳过 Morpho 市场 │ 原因=接口超时 │ 市场=%s │ 错误=%s", market.market_id, exc)
+                    continue
+                except httpx.HTTPError as exc:
+                    logger.warning("跳过 Morpho 市场 │ 原因=接口请求失败 │ 市场=%s │ 错误=%s", market.market_id, exc)
+                    continue
                 payload = response.json()
                 if payload.get("errors"):
                     raise RuntimeError(f"Morpho query failed: {payload['errors']}")

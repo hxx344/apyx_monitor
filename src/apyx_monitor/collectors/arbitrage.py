@@ -865,7 +865,12 @@ class ArbitrageCollector(BaseCollector):
         }
 
         await asyncio.sleep(QUOTE_THROTTLE_SECONDS)
-        response = await client.post(f"{PENDLE_SDK_BASE_URL}/{chain_id}/convert", json=payload)
+        try:
+            response = await client.post(f"{PENDLE_SDK_BASE_URL}/{chain_id}/convert", json=payload)
+        except httpx.TimeoutException as exc:
+            raise QuoteRouteUnavailableError(
+                f"PendleSwap 报价超时: chain={chain_id} token_in={token_in} token_out={token_out}"
+            ) from exc
         if response.status_code == 429:
             retry_after = (
                 self._retry_after_seconds(response)
@@ -918,7 +923,12 @@ class ArbitrageCollector(BaseCollector):
         }
 
         await asyncio.sleep(QUOTE_THROTTLE_SECONDS)
-        response = await client.get(JUMPER_QUOTE_URL, params=params)
+        try:
+            response = await client.get(JUMPER_QUOTE_URL, params=params)
+        except httpx.TimeoutException as exc:
+            raise QuoteRouteUnavailableError(
+                f"Jumper 报价超时: chain={chain_id} token_in={token_in} token_out={token_out}"
+            ) from exc
         if response.status_code == 429:
             retry_after = self._retry_after_seconds(response) or QUOTE_PROVIDER_COOLDOWN_SECONDS
             raise QuoteRateLimitedError(
@@ -974,7 +984,12 @@ class ArbitrageCollector(BaseCollector):
             params["destDecimals"] = str(dest_decimals)
 
         await asyncio.sleep(QUOTE_THROTTLE_SECONDS)
-        response = await client.get(VELORA_PRICE_URL, params=params)
+        try:
+            response = await client.get(VELORA_PRICE_URL, params=params)
+        except httpx.TimeoutException as exc:
+            raise QuoteRouteUnavailableError(
+                f"Velora 报价超时: chain={chain_id} token_in={token_in} token_out={token_out}"
+            ) from exc
         if response.status_code == 429:
             retry_after = self._retry_after_seconds(response) or QUOTE_PROVIDER_COOLDOWN_SECONDS
             raise QuoteRateLimitedError(

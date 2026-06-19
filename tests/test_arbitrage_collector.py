@@ -236,6 +236,10 @@ def test_quote_falls_back_to_jumper_when_pendleswap_is_rate_limited(monkeypatch)
     asyncio.run(_run_quote_falls_back_to_jumper_when_pendleswap_is_rate_limited_test(monkeypatch))
 
 
+def test_quote_falls_back_to_jumper_when_pendleswap_times_out(monkeypatch):
+    asyncio.run(_run_quote_falls_back_to_jumper_when_pendleswap_times_out_test(monkeypatch))
+
+
 def test_quote_falls_back_to_velora_when_pendleswap_and_jumper_are_rate_limited(
     monkeypatch,
 ):
@@ -1018,6 +1022,70 @@ async def _run_quote_falls_back_to_jumper_when_pendleswap_is_rate_limited_test(m
     assert client.calls[1][2]["toChain"] == "1"
     assert client.calls[1][2]["fromToken"] == "usdc"
     assert client.calls[1][2]["toToken"] == "eth-apy"
+    assert all(call[1] == "https://li.quest/v1/quote" for call in client.calls[1:])
+    assert [step["routing"]["provider"] for step in sample.route_steps if step["type"] == "swap"] == [
+        "jumper",
+        "jumper",
+        "jumper",
+    ]
+    assert sleep_calls == [4.0, 4.0, 4.0, 4.0]
+    pendle_rate_limit.clear_rate_limit()
+    arbitrage_module._quote_provider_cooldowns.clear()
+
+
+async def _run_quote_falls_back_to_jumper_when_pendleswap_times_out_test(monkeypatch):
+    pendle_rate_limit.clear_rate_limit()
+    arbitrage_module._quote_provider_cooldowns.clear()
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("apyx_monitor.collectors.arbitrage.asyncio.sleep", fake_sleep)
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict]] = []
+
+        async def post(self, url: str, json: dict) -> httpx.Response:
+            self.calls.append(("POST", url, json))
+            request = httpx.Request("POST", url)
+            raise httpx.ReadTimeout("mock timeout", request=request)
+
+        async def get(self, url: str, params: dict) -> httpx.Response:
+            self.calls.append(("GET", url, params))
+            request = httpx.Request("GET", url)
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "estimate": {
+                        "toAmount": _fallback_quote_amount(params["toToken"]),
+                        "toAmountMin": _fallback_quote_amount(params["toToken"]),
+                    },
+                    "tool": "jumper",
+                },
+            )
+
+    monitor, catalog, chain_id_map = _fallback_path_catalog()
+    collector = ArbitrageCollector(Settings(), catalog)
+    client = FakeClient()
+
+    sample = await collector._sample_monitor(
+        client,
+        monitor,
+        chain_id_map,
+        catalog.assets[0],
+        catalog.assets[1],
+        catalog.assets[2],
+        catalog.assets[3],
+        catalog.assets[4],
+        BUY_SOURCE_SELL_TARGET,
+        10000,
+        {},
+    )
+
+    assert [call[0] for call in client.calls] == ["POST", "GET", "GET", "GET"]
     assert all(call[1] == "https://li.quest/v1/quote" for call in client.calls[1:])
     assert [step["routing"]["provider"] for step in sample.route_steps if step["type"] == "swap"] == [
         "jumper",
