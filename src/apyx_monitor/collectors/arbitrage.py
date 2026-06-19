@@ -409,19 +409,6 @@ class ArbitrageCollector(BaseCollector):
         )
         start_amount = funding_raw / 10 ** funding_asset.decimals
 
-        apxusd_loop_start_amount, apxusd_loop_final_amount = await self._sample_apxusd_loop(
-            client,
-            monitor,
-            chain_id_map,
-            settlement_apxusd,
-            settlement_apyusd,
-            remote_apxusd,
-            remote_apyusd,
-            BUY_SOURCE_SELL_TARGET,
-            quote_cache,
-            quote_provider,
-        )
-
         entry_leg = await self._quote_cached(
             client,
             settlement_chain_id,
@@ -465,6 +452,12 @@ class ArbitrageCollector(BaseCollector):
             quote_provider=quote_provider,
         )
         final_amount = exit_leg.amount_out_raw / 10 ** funding_asset.decimals
+        apxusd_loop_start_amount = APXUSD_LOOP_NOTIONAL
+        apxusd_loop_final_amount = self._scale_amount(
+            final_apxusd_amount,
+            APXUSD_LOOP_NOTIONAL,
+            start_amount,
+        )
         first_bridge_cost_usd = self._bridge_cost_usd(
             bought_apyusd_amount,
             settlement_apyusd,
@@ -590,20 +583,6 @@ class ArbitrageCollector(BaseCollector):
             funding_asset.decimals,
         )
         start_amount = funding_raw / 10 ** funding_asset.decimals
-
-        apxusd_loop_start_amount, apxusd_loop_final_amount = await self._sample_apxusd_loop(
-            client,
-            monitor,
-            chain_id_map,
-            settlement_apxusd,
-            settlement_apyusd,
-            remote_apxusd,
-            remote_apyusd,
-            BUY_TARGET_SELL_SOURCE,
-            quote_cache,
-            quote_provider,
-        )
-
         entry_leg = await self._quote_cached(
             client,
             settlement_chain_id,
@@ -651,6 +630,12 @@ class ArbitrageCollector(BaseCollector):
             quote_provider=quote_provider,
         )
         final_amount = exit_leg.amount_out_raw / 10 ** funding_asset.decimals
+        apxusd_loop_start_amount = APXUSD_LOOP_NOTIONAL
+        apxusd_loop_final_amount = self._scale_amount(
+            final_amount,
+            APXUSD_LOOP_NOTIONAL,
+            entry_apxusd_amount,
+        )
         first_bridge_cost_usd = self._bridge_cost_usd(
             entry_apxusd_amount,
             settlement_apxusd,
@@ -752,80 +737,6 @@ class ArbitrageCollector(BaseCollector):
             second_bridge_cost_usd=second_bridge_cost_usd,
             route_steps=route_steps,
             recorded_at=recorded_at,
-        )
-
-    async def _sample_apxusd_loop(
-        self,
-        client: httpx.AsyncClient,
-        monitor: ArbitrageMonitorDefinition,
-        chain_id_map: dict[str, int],
-        settlement_apxusd: AssetDefinition,
-        settlement_apyusd: AssetDefinition,
-        remote_apxusd: AssetDefinition,
-        remote_apyusd: AssetDefinition,
-        strategy_id: str,
-        quote_cache: QuoteCache | None,
-        quote_provider: str,
-    ) -> tuple[float, float]:
-        settlement_chain_id = chain_id_map[monitor.source_chain]
-        remote_chain_id = chain_id_map[monitor.target_chain]
-        start_raw = self._to_raw_amount(APXUSD_LOOP_NOTIONAL, settlement_apxusd.decimals)
-
-        if strategy_id == BUY_SOURCE_SELL_TARGET:
-            entry_leg = await self._quote_cached(
-                client,
-                settlement_chain_id,
-                monitor,
-                settlement_apxusd.contract_address,
-                settlement_apyusd.contract_address,
-                start_raw,
-                quote_cache,
-                quote_provider=quote_provider,
-            )
-            remote_apyusd_raw = entry_leg.amount_out_raw
-            exit_leg = await self._quote_cached(
-                client,
-                remote_chain_id,
-                monitor,
-                remote_apyusd.contract_address,
-                remote_apxusd.contract_address,
-                remote_apyusd_raw,
-                quote_cache,
-                quote_provider=quote_provider,
-            )
-            final_raw = exit_leg.amount_out_raw
-        elif strategy_id == BUY_TARGET_SELL_SOURCE:
-            remote_apxusd_raw = start_raw
-            entry_leg = await self._quote_cached(
-                client,
-                remote_chain_id,
-                monitor,
-                remote_apxusd.contract_address,
-                remote_apyusd.contract_address,
-                remote_apxusd_raw,
-                quote_cache,
-                allow_reverse_fallback=True,
-                quote_provider=quote_provider,
-            )
-            settlement_apyusd_raw = entry_leg.amount_out_raw
-            exit_leg = await self._quote_cached(
-                client,
-                settlement_chain_id,
-                monitor,
-                settlement_apyusd.contract_address,
-                settlement_apxusd.contract_address,
-                settlement_apyusd_raw,
-                quote_cache,
-                allow_reverse_fallback=True,
-                quote_provider=quote_provider,
-            )
-            final_raw = exit_leg.amount_out_raw
-        else:
-            raise ValueError(f"Unsupported arbitrage strategy: {strategy_id}")
-
-        return (
-            start_raw / 10 ** settlement_apxusd.decimals,
-            final_raw / 10 ** settlement_apxusd.decimals,
         )
 
     def _build_sample(
@@ -1467,6 +1378,12 @@ class ArbitrageCollector(BaseCollector):
         if target_decimals > source_decimals:
             return amount_raw * 10 ** (target_decimals - source_decimals)
         return amount_raw // 10 ** (source_decimals - target_decimals)
+
+    @staticmethod
+    def _scale_amount(amount: float, target_basis: float, source_basis: float) -> float:
+        if source_basis == 0:
+            return 0.0
+        return amount * target_basis / source_basis
 
     @staticmethod
     def _bridge_cost_usd(
