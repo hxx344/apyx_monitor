@@ -34,7 +34,7 @@ def build_scheduler(service: MonitoringService) -> AsyncIOScheduler:
         "interval",
         seconds=settings.arbitrage_interval_seconds,
         id="apyx-monitor-arbitrage-poll",
-        start_date=datetime.now(timezone.utc) + timedelta(seconds=30),
+        start_date=datetime.now(timezone.utc) + timedelta(seconds=45),
         max_instances=1,
         coalesce=True,
     )

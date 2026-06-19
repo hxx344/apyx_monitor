@@ -91,11 +91,23 @@ class MonitoringService:
                 "last_run_at": self.last_nav_curve_run_at.isoformat(),
             }
 
-    async def poll_arbitrage_once(self) -> dict[str, object]:
+    async def poll_arbitrage_once(self, wait_for_lock_seconds: float = 120.0) -> dict[str, object]:
         if self._lock.locked():
+            logger.info(
+                "闭环套利刷新等待中 │ 原因=已有采集任务正在运行 │ 最长等待=%.0f秒",
+                wait_for_lock_seconds,
+            )
+
+        try:
+            await asyncio.wait_for(self._lock.acquire(), timeout=wait_for_lock_seconds)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "跳过闭环套利刷新 │ 原因=等待采集锁超时 │ 等待=%.0f秒",
+                wait_for_lock_seconds,
+            )
             return {"status": "skipped", "reason": "poll already in progress"}
 
-        async with self._lock:
+        try:
             self.last_arbitrage_errors = {}
             all_points: list[MetricPoint] = []
             try:
@@ -116,6 +128,8 @@ class MonitoringService:
                 "errors": self.last_arbitrage_errors,
                 "last_run_at": self.last_arbitrage_run_at.isoformat(),
             }
+        finally:
+            self._lock.release()
 
     async def _collect_all(self) -> tuple[list[MetricPoint], dict[str, str]]:
         results = []
