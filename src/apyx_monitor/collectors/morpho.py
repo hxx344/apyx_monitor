@@ -78,15 +78,14 @@ class MorphoCollector(BaseCollector):
                     raise RuntimeError(f"Morpho query failed: {payload['errors']}")
                 market_data = payload.get("data", {}).get("marketById")
                 if not market_data:
-                    logger.warning("Morpho market not found: market_id=%s", market.market_id)
+                    logger.warning("Morpho 市场未找到 │ 市场=%s", market.market_id)
                     continue
                 state = market_data.get("state") or {}
                 loan_asset = market_data.get("loanAsset") or {}
                 loan_decimals = self._to_float(loan_asset.get("decimals"))
                 if loan_decimals is None:
                     logger.warning(
-                        "Morpho market skipped because loan asset decimals are missing: "
-                        "market_id=%s",
+                        "跳过 Morpho 市场 │ 原因=借款资产 decimals 缺失 │ 市场=%s",
                         market.market_id,
                     )
                     continue
@@ -173,7 +172,7 @@ class MorphoCollector(BaseCollector):
     ) -> None:
         if value is None:
             logger.warning(
-                "Morpho metric skipped because value is missing: %s/%s",
+                "跳过 Morpho 指标 │ 原因=数值缺失 │ 对象=%s │ 指标=%s",
                 entity_id,
                 metric_name,
             )

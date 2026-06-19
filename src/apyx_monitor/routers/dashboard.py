@@ -498,26 +498,13 @@ def _render_hedged_nav_discount_card(
 ) -> str:
     entity_id = item["entity_id"]
     apy_metric = latest_map.get((entity_id, item["metric_name"]))
-    return_metric = latest_map.get((entity_id, item["secondary_metric_name"]))
-    curve_metric = latest_map.get(("curve-apyusd-apxusd", "exchange_rate"))
-    nav_metric = latest_map.get(("apyusd-ethereum", "convert_to_assets"))
-
-    metric_times = [
-        metric.recorded_at
-        for metric in (apy_metric, return_metric, curve_metric, nav_metric)
-        if metric
-    ]
+    metric_times = [apy_metric.recorded_at] if apy_metric else []
     recorded_at = f"{_format_dt(max(metric_times))} 北京时间" if metric_times else "-"
 
     return f'''
             <div class="card strategy-card">
               <div class="label">{escape(item["label"])}</div>
               <div class="value">{escape(_format_value("annualized_apy_pct", apy_metric.value if apy_metric else None))}</div>
-              <div class="strategy-grid">
-                <div><span>20天收益</span><strong>{escape(_format_value("unlock_return_pct", return_metric.value if return_metric else None))}</strong></div>
-                <div><span>Curve 买入价</span><strong>{escape(_format_value("exchange_rate", curve_metric.value if curve_metric else None))}</strong></div>
-                <div><span>NAV 结算价</span><strong>{escape(_format_value("convert_to_assets", nav_metric.value if nav_metric else None))}</strong></div>
-              </div>
               <div class="meta">假设 Lighter 做空等额 STRC 对冲 apxUSD 风险；更新时间：{escape(recorded_at)}</div>
             </div>
             '''

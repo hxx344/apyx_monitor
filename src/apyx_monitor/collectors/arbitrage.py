@@ -167,7 +167,7 @@ class ArbitrageCollector(BaseCollector):
                 [funding_asset, settlement_apxusd, settlement_apyusd, remote_apxusd, remote_apyusd]
             ):
                 logger.warning(
-                    "arbitrage monitor skipped because assets are missing: monitor=%s",
+                    "跳过套利路径 │ 原因=资产配置缺失 │ 路径=%s",
                     monitor.monitor_id,
                 )
                 continue
@@ -199,7 +199,7 @@ class ArbitrageCollector(BaseCollector):
             remote_apyusd,
         ) = monitor_contexts[selected_index]
         logger.info(
-            "arbitrage collector sampling monitor %s (%s/%s)",
+            "采样套利路径 │ 路径=%s │ 进度=%s/%s",
             monitor.monitor_id,
             selected_index + 1,
             len(monitor_contexts),
@@ -210,7 +210,7 @@ class ArbitrageCollector(BaseCollector):
                 best_candidates=list(self._latest_samples.values()),
             )
         if force:
-            logger.info("arbitrage collector entering path calculation because refresh was forced")
+            logger.info("开始计算套利路径 │ 触发=定时/手动强制刷新 │ Curve gate=已绕过")
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             for notional_usd in monitor.notionals_usd:
@@ -231,8 +231,7 @@ class ArbitrageCollector(BaseCollector):
                         )
                     except QuoteRateLimitedError as exc:
                         logger.warning(
-                            "arbitrage collector skipped because all quote providers are "
-                            "rate limited: monitor=%s strategy=%s notional=%s error=%s",
+                            "套利报价暂停 │ 原因=全部报价源限流 │ 路径=%s │ 策略=%s │ 本金=$%s │ 详情=%s",
                             monitor.monitor_id,
                             strategy_id,
                             notional_usd,
@@ -244,8 +243,7 @@ class ArbitrageCollector(BaseCollector):
                         )
                     except QuoteRouteUnavailableError as exc:
                         logger.warning(
-                            "arbitrage sample skipped because quote route is unavailable: "
-                            "monitor=%s strategy=%s notional=%s error=%s",
+                            "跳过套利样本 │ 原因=报价路径不可用 │ 路径=%s │ 策略=%s │ 本金=$%s │ 详情=%s",
                             monitor.monitor_id,
                             strategy_id,
                             notional_usd,
@@ -254,7 +252,7 @@ class ArbitrageCollector(BaseCollector):
                         continue
                     except Exception:  # noqa: BLE001
                         logger.exception(
-                            "arbitrage sample failed: monitor=%s strategy=%s notional=%s",
+                            "套利样本计算失败 │ 路径=%s │ 策略=%s │ 本金=$%s",
                             monitor.monitor_id,
                             strategy_id,
                             notional_usd,
@@ -289,8 +287,7 @@ class ArbitrageCollector(BaseCollector):
             rate_limited_until = self._quote_provider_rate_limited_until(quote_provider)
             if rate_limited_until is not None:
                 logger.info(
-                    "arbitrage path quote provider %s is rate limited until %s; "
-                    "trying next provider",
+                    "报价源限流 │ 来源=%s │ 恢复时间=%s │ 动作=尝试下一个来源",
                     quote_provider,
                     rate_limited_until.isoformat(),
                 )
@@ -318,8 +315,7 @@ class ArbitrageCollector(BaseCollector):
                     retry_after,
                 )
                 logger.warning(
-                    "arbitrage path quote provider %s is rate limited until %s; "
-                    "restarting path with next provider",
+                    "报价源限流 │ 来源=%s │ 恢复时间=%s │ 动作=切换下一个来源重试",
                     quote_provider,
                     rate_limited_until.isoformat(),
                 )
@@ -327,8 +323,7 @@ class ArbitrageCollector(BaseCollector):
                 continue
             except QuoteRouteUnavailableError as exc:
                 logger.info(
-                    "arbitrage path quote provider %s route unavailable; "
-                    "restarting path with next provider: %s",
+                    "报价路径不可用 │ 来源=%s │ 动作=切换下一个来源重试 │ 详情=%s",
                     quote_provider,
                     exc,
                 )
@@ -1130,7 +1125,7 @@ class ArbitrageCollector(BaseCollector):
 
         amount_out_raw = amount_in_raw * reverse_quote.amount_in_raw // reverse_quote.amount_out_raw
         logger.warning(
-            "quote %s -> %s on chain %s returned %s; using reverse quote fallback",
+            "使用反向报价兜底 │ 交易=%s -> %s │ 链=%s │ 原状态=%s",
             token_in,
             token_out,
             chain_id,
@@ -1354,8 +1349,7 @@ class ArbitrageCollector(BaseCollector):
         snapshots = self._latest_curve_nav_deviation_snapshots(limit=10)
         if not snapshots:
             logger.info(
-                "arbitrage collector skipped path calculation because Curve/NAV "
-                "deviation is not available yet"
+                "暂不计算套利路径 │ 原因=暂无 Curve/NAV 偏离数据"
             )
             return False
 
@@ -1364,8 +1358,7 @@ class ArbitrageCollector(BaseCollector):
         age_seconds = (now - latest_recorded_at).total_seconds()
         if age_seconds > self.settings.arbitrage_curve_gate_max_age_seconds:
             logger.info(
-                "arbitrage collector skipped path calculation because latest "
-                "Curve/NAV deviation is stale: age=%.0fs max_age=%ss",
+                "暂不计算套利路径 │ 原因=Curve/NAV 数据过期 │ 年龄=%.0f秒 │ 最大允许=%s秒",
                 age_seconds,
                 self.settings.arbitrage_curve_gate_max_age_seconds,
             )
@@ -1384,8 +1377,7 @@ class ArbitrageCollector(BaseCollector):
 
         if change_triggered:
             logger.info(
-                "arbitrage collector entering path calculation: "
-                "curve_nav_deviation=%.4f%% change=%.4f%% window=%ss",
+                "开始计算套利路径 │ 触发=Curve/NAV 波动 │ 偏离=%.4f%% │ 变化=%.4f%% │ 窗口=%s秒",
                 latest.value,
                 change_pct,
                 self.settings.arbitrage_curve_gate_change_window_seconds,
@@ -1393,8 +1385,7 @@ class ArbitrageCollector(BaseCollector):
             return True
 
         logger.info(
-            "arbitrage collector skipped path calculation because Curve/NAV is quiet: "
-            "deviation=%.4f%% change=%.4f%% min_change=%.4f%% window=%ss",
+            "暂不计算套利路径 │ 原因=Curve/NAV 波动未达阈值 │ 偏离=%.4f%% │ 变化=%.4f%% │ 阈值=%.4f%% │ 窗口=%s秒",
             latest.value,
             change_pct,
             self.settings.arbitrage_curve_gate_min_change_pct,

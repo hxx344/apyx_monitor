@@ -75,7 +75,7 @@ class MonitoringService:
             try:
                 all_points = await self.onchain_collector.collect_nav_curve()
             except Exception as exc:  # noqa: BLE001
-                logger.exception("nav/curve collector failed")
+                logger.exception("NAV/Curve 快扫失败")
                 self.last_nav_curve_errors["nav_curve"] = str(exc)
 
             evaluation = await asyncio.to_thread(self._persist_and_evaluate, all_points)
@@ -101,7 +101,7 @@ class MonitoringService:
             try:
                 all_points = await self.arbitrage_collector.collect(force=True)
             except Exception as exc:  # noqa: BLE001
-                logger.exception("arbitrage collector failed")
+                logger.exception("闭环套利采集失败")
                 self.last_arbitrage_errors["arbitrage"] = str(exc)
 
             evaluation = await asyncio.to_thread(self._persist_and_evaluate, all_points)
@@ -136,7 +136,7 @@ class MonitoringService:
         try:
             return collector.name, await collector.collect(), None
         except Exception as exc:  # noqa: BLE001
-            logger.exception("collector %s failed", collector.name)
+            logger.exception("采集器失败 │ 名称=%s", collector.name)
             return collector.name, [], str(exc)
 
     def _persist_and_evaluate(self, all_points: list[MetricPoint]) -> RuleEvaluationResult:
@@ -171,7 +171,7 @@ class MonitoringService:
             try:
                 await self.rule_engine.notifier.notify(notification.title, notification.body)
             except Exception as exc:  # noqa: BLE001
-                logger.exception("alert notification failed")
+                logger.exception("告警通知发送失败")
                 errors[f"notification:{notification.title}"] = str(exc)
 
     @staticmethod

@@ -284,7 +284,7 @@ class OnChainCollector(BaseCollector):
                     )
                     aggregates[asset.group_id]["tvl_usd"] += tvl_usd
             except Exception as exc:  # noqa: BLE001
-                logger.warning("onchain asset %s failed: %s", asset.asset_id, exc)
+                logger.warning("链上资产采集失败 │ 资产=%s │ 错误=%s", asset.asset_id, exc)
                 continue
 
         try:
@@ -315,7 +315,11 @@ class OnChainCollector(BaseCollector):
                 )
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("onchain feed %s failed: %s", APYX_CAPPED_COLLATERALIZATION_RATIO_FEED, exc)
+            logger.warning(
+                "链上价格源采集失败 │ 地址=%s │ 错误=%s",
+                APYX_CAPPED_COLLATERALIZATION_RATIO_FEED,
+                exc,
+            )
 
         try:
             ethereum_chain = chain_map["ethereum"]
@@ -369,7 +373,7 @@ class OnChainCollector(BaseCollector):
                 ]
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("onchain APYX rate view %s failed: %s", APYX_APYUSD_RATE_VIEW, exc)
+            logger.warning("APYX RateView 采集失败 │ 地址=%s │ 错误=%s", APYX_APYUSD_RATE_VIEW, exc)
 
         for pool in self.catalog.curve_pools:
             if not pool.enabled:
@@ -378,7 +382,7 @@ class OnChainCollector(BaseCollector):
             token_out = asset_map.get(pool.token_out_asset_id)
             if token_in is None or token_out is None:
                 logger.warning(
-                    "curve pool %s skipped: missing asset config %s -> %s",
+                    "跳过 Curve 池 │ 原因=资产配置缺失 │ 池=%s │ 交易对=%s -> %s",
                     pool.pool_id,
                     pool.token_in_asset_id,
                     pool.token_out_asset_id,
@@ -401,7 +405,7 @@ class OnChainCollector(BaseCollector):
                 token_out_address = Web3.to_checksum_address(token_out.contract_address)
                 if token_in_address not in coin_addresses or token_out_address not in coin_addresses:
                     logger.warning(
-                        "curve pool %s skipped: token addresses not found in pool coins",
+                        "跳过 Curve 池 │ 原因=池内未找到代币地址 │ 池=%s",
                         pool.pool_id,
                     )
                     continue
@@ -439,7 +443,7 @@ class OnChainCollector(BaseCollector):
                     )
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("curve pool %s failed: %s", pool.pool_id, exc)
+                logger.warning("Curve 池采集失败 │ 池=%s │ 错误=%s", pool.pool_id, exc)
 
         metrics.extend(
             _apyusd_hedged_nav_discount_metrics(
@@ -574,7 +578,11 @@ class OnChainCollector(BaseCollector):
                     )
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("nav/curve asset %s failed: %s", APYUSD_ETHEREUM_ASSET_ID, exc)
+                logger.warning(
+                    "NAV/Curve 快扫资产失败 │ 资产=%s │ 错误=%s",
+                    APYUSD_ETHEREUM_ASSET_ID,
+                    exc,
+                )
 
         for pool in self.catalog.curve_pools:
             if not pool.enabled:
@@ -583,7 +591,7 @@ class OnChainCollector(BaseCollector):
             token_out = asset_map.get(pool.token_out_asset_id)
             if token_in is None or token_out is None:
                 logger.warning(
-                    "nav/curve pool %s skipped: missing asset config %s -> %s",
+                    "跳过 NAV/Curve 池快扫 │ 原因=资产配置缺失 │ 池=%s │ 交易对=%s -> %s",
                     pool.pool_id,
                     pool.token_in_asset_id,
                     pool.token_out_asset_id,
@@ -612,7 +620,7 @@ class OnChainCollector(BaseCollector):
                 )
                 if missing_token:
                     logger.warning(
-                        "nav/curve pool %s skipped: token addresses not found in pool coins",
+                        "跳过 NAV/Curve 池快扫 │ 原因=池内未找到代币地址 │ 池=%s",
                         pool.pool_id,
                     )
                     continue
@@ -650,7 +658,7 @@ class OnChainCollector(BaseCollector):
                     )
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("nav/curve pool %s failed: %s", pool.pool_id, exc)
+                logger.warning("NAV/Curve 池快扫失败 │ 池=%s │ 错误=%s", pool.pool_id, exc)
 
         metrics.extend(
             _apyusd_hedged_nav_discount_metrics(
