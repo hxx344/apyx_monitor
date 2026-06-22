@@ -586,18 +586,37 @@ class OnChainCollector(BaseCollector):
                 if from_block > latest_block:
                     return []
 
+                min_realtime_block = max(0, latest_block - max_range + 1)
+                if from_block < min_realtime_block:
+                    logger.warning(
+                        "Approval 事件监控跳过旧区块 │ from=%s │ latest=%s │ 保留窗口=%s",
+                        from_block,
+                        latest_block,
+                        max_range,
+                    )
+                    from_block = min_realtime_block
+
                 to_block = min(latest_block, from_block + max_range - 1)
-                logs = web3.eth.get_logs(
-                    {
-                        "address": Web3.to_checksum_address(APPROVAL_MONITOR_TOKEN),
-                        "fromBlock": from_block,
-                        "toBlock": to_block,
-                        "topics": [
-                            APPROVAL_EVENT_TOPIC,
-                            _address_topic(APPROVAL_MONITOR_OWNER),
-                        ],
-                    }
-                )
+                try:
+                    logs = web3.eth.get_logs(
+                        {
+                            "address": Web3.to_checksum_address(APPROVAL_MONITOR_TOKEN),
+                            "fromBlock": from_block,
+                            "toBlock": to_block,
+                            "topics": [
+                                APPROVAL_EVENT_TOPIC,
+                                _address_topic(APPROVAL_MONITOR_OWNER),
+                            ],
+                        }
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Approval 事件 getLogs 失败 │ from=%s │ to=%s │ 错误=%s",
+                        from_block,
+                        to_block,
+                        exc,
+                    )
+                    return []
 
                 if cursor is None:
                     session.add(
@@ -648,7 +667,7 @@ class OnChainCollector(BaseCollector):
                 )
             return metrics
         except Exception:  # noqa: BLE001
-            logger.exception("Approval 事件监控失败")
+            logger.warning("Approval 事件监控失败", exc_info=True)
             return []
 
     async def collect_nav_curve(self) -> list[MetricPoint]:

@@ -41,7 +41,7 @@ class Settings(BaseSettings):
         default=0, alias="APPROVAL_MONITOR_INITIAL_LOOKBACK_BLOCKS"
     )
     approval_monitor_max_block_range: int = Field(
-        default=2000, alias="APPROVAL_MONITOR_MAX_BLOCK_RANGE"
+        default=100, alias="APPROVAL_MONITOR_MAX_BLOCK_RANGE"
     )
     http_timeout_seconds: int = Field(default=15, alias="HTTP_TIMEOUT_SECONDS")
     dashboard_username: str = Field(default="admin", alias="DASHBOARD_USERNAME")
