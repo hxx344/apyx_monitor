@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     arbitrage_curve_gate_change_window_seconds: int = Field(
         default=120, alias="ARBITRAGE_CURVE_GATE_CHANGE_WINDOW_SECONDS"
     )
+    approval_monitor_initial_lookback_blocks: int = Field(
+        default=0, alias="APPROVAL_MONITOR_INITIAL_LOOKBACK_BLOCKS"
+    )
+    approval_monitor_max_block_range: int = Field(
+        default=2000, alias="APPROVAL_MONITOR_MAX_BLOCK_RANGE"
+    )
     http_timeout_seconds: int = Field(default=15, alias="HTTP_TIMEOUT_SECONDS")
     dashboard_username: str = Field(default="admin", alias="DASHBOARD_USERNAME")
     dashboard_password: str = Field(default="admin", alias="DASHBOARD_PASSWORD")
@@ -150,6 +156,7 @@ class RuleDefinition(BaseModel):
     cooldown_seconds: int = 900
     required_consecutive_hits: int = 1
     notify_feishu: bool = False
+    notify_once: bool = False
     enabled: bool = True
 
 

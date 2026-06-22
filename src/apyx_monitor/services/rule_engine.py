@@ -51,7 +51,7 @@ class RuleEngine:
             if not rule.enabled:
                 continue
             metric = latest_metrics.get((rule.entity_id, rule.metric_name))
-            fingerprint = f"{rule.rule_id}:{rule.entity_id}:{rule.metric_name}"
+            fingerprint = self._fingerprint(rule, metric)
             active_alert = session.exec(
                 select(AlertEvent).where(
                     AlertEvent.fingerprint == fingerprint,
@@ -149,8 +149,11 @@ class RuleEngine:
 
         last_notified_at = self._ensure_aware(active_alert.notified_at)
         should_remind = (
-            last_notified_at is None
-            or now - last_notified_at >= timedelta(seconds=rule.cooldown_seconds)
+            not rule.notify_once
+            and (
+                last_notified_at is None
+                or now - last_notified_at >= timedelta(seconds=rule.cooldown_seconds)
+            )
         )
         if should_notify and should_remind:
             notifications.append(
@@ -181,7 +184,7 @@ class RuleEngine:
         )
         active_alert.resolved_at = now
         active_alert.last_triggered_at = now
-        if self._should_notify(rule):
+        if self._should_notify(rule) and not rule.notify_once:
             notifications.append(
                 NotificationMessage(
                     title=f"[{rule.severity}] APYX 监控恢复",
@@ -199,6 +202,8 @@ class RuleEngine:
     ) -> str:
         if rule.rule_id == "crosschain_arb_edge_opportunity":
             return RuleEngine._build_arbitrage_summary(rule, current_value, status, details or {})
+        if rule.rule_id == "eth_cd2a_336555_approval_detected":
+            return RuleEngine._build_approval_summary(rule, status, details or {})
         operator_map = {"lt": "<", "lte": "<=", "gt": ">", "gte": ">="}
         prefix = "触发" if status == "firing" else "恢复"
         return (
@@ -241,6 +246,35 @@ class RuleEngine:
         return "\n".join(lines)
 
     @staticmethod
+    def _build_approval_summary(
+        rule: RuleDefinition,
+        status: str,
+        details: dict,
+    ) -> str:
+        prefix = "触发" if status == "firing" else "恢复"
+        lines = [
+            f"{prefix}规则: {rule.description}",
+            f"链: {details.get('chain', 'ethereum')}",
+            f"Owner: {details.get('owner', '-')}",
+            f"Token: {details.get('token', '-')}",
+            f"Spender: {details.get('spender', '-')}",
+            f"数量(raw): {details.get('approval_value_raw', '-')}",
+        ]
+        tx_hash = details.get("tx_hash")
+        if tx_hash:
+            lines.append(f"Tx: {tx_hash}")
+        log_index = details.get("log_index")
+        if log_index is not None:
+            lines.append(f"LogIndex: {log_index}")
+        block_number = details.get("block_number")
+        if block_number is not None:
+            lines.append(f"Block: {block_number}")
+        events_in_scan = details.get("events_in_scan")
+        if isinstance(events_in_scan, int) and events_in_scan > 1:
+            lines.append(f"本轮命中事件数: {events_in_scan}")
+        return "\n".join(lines)
+
+    @staticmethod
     def _format_arbitrage_route(steps: object) -> str:
         if not isinstance(steps, list):
             return ""
@@ -267,3 +301,16 @@ class RuleEngine:
     @staticmethod
     def _should_notify(rule: RuleDefinition) -> bool:
         return rule.notify_feishu
+
+    @staticmethod
+    def _fingerprint(rule: RuleDefinition, metric: dict | None) -> str:
+        base = f"{rule.rule_id}:{rule.entity_id}:{rule.metric_name}"
+        if metric is None:
+            return base
+        details = metric.get("details", {})
+        if not isinstance(details, dict):
+            return base
+        event_fingerprint = details.get("alert_fingerprint")
+        if event_fingerprint:
+            return f"{base}:{event_fingerprint}"
+        return base

@@ -5,9 +5,12 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timezone
 
+from sqlmodel import Session, select
 from web3 import Web3
 
 from ..config import AssetCatalog, Settings
+from ..db import engine
+from ..models import OnChainEventCursor
 from .base import BaseCollector, MetricPoint
 
 ERC20_ABI = [
@@ -129,6 +132,12 @@ CURVE_APYUSD_APXUSD_POOL_ID = "curve-apyusd-apxusd"
 COMPOUNDING_PERIODS_PER_YEAR = 12
 APYUSD_HEDGED_NAV_DISCOUNT_ENTITY_ID = "apyusd-hedged-nav-discount"
 APYUSD_UNLOCK_DAYS = 20
+APPROVAL_MONITOR_ENTITY_ID = "eth-approval-cd2a-336555"
+APPROVAL_MONITOR_METRIC_NAME = "approval_detected"
+APPROVAL_MONITOR_CHAIN = "ethereum"
+APPROVAL_MONITOR_OWNER = "0xcd2a3555fae0ed39731c56677c11538d9481a768"
+APPROVAL_MONITOR_TOKEN = "0x3365554a61CeFF74A76528f9e86C1E87946d16a5"
+APPROVAL_EVENT_TOPIC = Web3.to_hex(Web3.keccak(text="Approval(address,address,uint256)"))
 
 
 logger = logging.getLogger(__name__)
@@ -533,7 +542,114 @@ class OnChainCollector(BaseCollector):
                     )
                 )
 
+        metrics.extend(self._collect_approval_monitor_metrics(recorded_at, chain_map))
+
         return metrics
+
+    def _collect_approval_monitor_metrics(
+        self,
+        recorded_at: datetime,
+        chain_map: dict,
+    ) -> list[MetricPoint]:
+        try:
+            chain = chain_map[APPROVAL_MONITOR_CHAIN]
+            web3 = self._get_provider(APPROVAL_MONITOR_CHAIN, chain.resolve_rpc_url())
+            latest_block = int(web3.eth.block_number)
+            max_range = max(1, int(self.settings.approval_monitor_max_block_range))
+            lookback = max(0, int(self.settings.approval_monitor_initial_lookback_blocks))
+            cursor_id = (
+                f"{APPROVAL_MONITOR_CHAIN}:approval:"
+                f"{APPROVAL_MONITOR_TOKEN.lower()}:{APPROVAL_MONITOR_OWNER.lower()}"
+            )
+
+            with Session(engine) as session:
+                cursor = session.exec(
+                    select(OnChainEventCursor).where(OnChainEventCursor.cursor_id == cursor_id)
+                ).first()
+                if cursor is None and lookback == 0:
+                    session.add(
+                        OnChainEventCursor(
+                            cursor_id=cursor_id,
+                            chain=APPROVAL_MONITOR_CHAIN,
+                            last_scanned_block=latest_block,
+                            updated_at=recorded_at,
+                        )
+                    )
+                    session.commit()
+                    return []
+
+                from_block = (
+                    max(0, latest_block - lookback)
+                    if cursor is None
+                    else cursor.last_scanned_block + 1
+                )
+                if from_block > latest_block:
+                    return []
+
+                to_block = min(latest_block, from_block + max_range - 1)
+                logs = web3.eth.get_logs(
+                    {
+                        "address": Web3.to_checksum_address(APPROVAL_MONITOR_TOKEN),
+                        "fromBlock": from_block,
+                        "toBlock": to_block,
+                        "topics": [
+                            APPROVAL_EVENT_TOPIC,
+                            _address_topic(APPROVAL_MONITOR_OWNER),
+                        ],
+                    }
+                )
+
+                if cursor is None:
+                    session.add(
+                        OnChainEventCursor(
+                            cursor_id=cursor_id,
+                            chain=APPROVAL_MONITOR_CHAIN,
+                            last_scanned_block=to_block,
+                            updated_at=recorded_at,
+                        )
+                    )
+                else:
+                    cursor.last_scanned_block = to_block
+                    cursor.updated_at = recorded_at
+                session.commit()
+
+            if not logs:
+                return []
+
+            metrics: list[MetricPoint] = []
+            for log in logs:
+                tx_hash = _to_0x_hex(log["transactionHash"])
+                log_index = int(log["logIndex"])
+                details = {
+                    "alert_fingerprint": f"{tx_hash}:{log_index}",
+                    "chain": APPROVAL_MONITOR_CHAIN,
+                    "owner": Web3.to_checksum_address(APPROVAL_MONITOR_OWNER),
+                    "token": Web3.to_checksum_address(APPROVAL_MONITOR_TOKEN),
+                    "from_block": from_block,
+                    "to_block": to_block,
+                    "block_number": int(log["blockNumber"]),
+                    "tx_hash": tx_hash,
+                    "log_index": log_index,
+                    "spender": _topic_address(log["topics"][2]),
+                    "approval_value_raw": str(_hex_data_to_int(log["data"])),
+                    "events_in_scan": len(logs),
+                }
+                metrics.append(
+                    MetricPoint(
+                        entity_id=APPROVAL_MONITOR_ENTITY_ID,
+                        entity_type="onchain_event",
+                        metric_name=APPROVAL_MONITOR_METRIC_NAME,
+                        value=1.0,
+                        unit="event",
+                        source=f"rpc:{APPROVAL_MONITOR_CHAIN}",
+                        recorded_at=recorded_at,
+                        details=details,
+                    )
+                )
+            return metrics
+        except Exception:  # noqa: BLE001
+            logger.exception("Approval 事件监控失败")
+            return []
 
     async def collect_nav_curve(self) -> list[MetricPoint]:
         return await asyncio.to_thread(self._collect_nav_curve)
@@ -745,3 +861,23 @@ def _apyusd_hedged_nav_discount_metrics(
             details=details,
         ),
     ]
+
+
+def _address_topic(address: str) -> str:
+    return "0x" + "0" * 24 + Web3.to_checksum_address(address)[2:].lower()
+
+
+def _topic_address(topic: object) -> str:
+    topic_hex = _to_0x_hex(topic)
+    return Web3.to_checksum_address("0x" + topic_hex[-40:])
+
+
+def _hex_data_to_int(data: object) -> int:
+    data_hex = _to_0x_hex(data)
+    return int(data_hex, 16)
+
+
+def _to_0x_hex(value: object) -> str:
+    if hasattr(value, "to_0x_hex"):
+        return value.to_0x_hex()
+    return Web3.to_hex(value)

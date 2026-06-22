@@ -87,3 +87,28 @@ rules:
     required_consecutive_hits: 1
     notify_feishu: true
     enabled: true
+
+  - rule_id: crosschain_apxusd_loop_final_ceiling
+    description: 10,000 apxUSD 闭环后数量超过 10,100
+    entity_id: arb-apyusd-apxusd-crosschain
+    metric_name: best_apxusd_loop_final
+    comparator: gt
+    threshold: 10100
+    severity: P1
+    cooldown_seconds: 300
+    required_consecutive_hits: 1
+    notify_feishu: true
+    enabled: true
+
+  - rule_id: eth_cd2a_336555_approval_detected
+    description: 监控地址在 Ethereum 上 approve 目标代币
+    entity_id: eth-approval-cd2a-336555
+    metric_name: approval_detected
+    comparator: gt
+    threshold: 0
+    severity: P1
+    cooldown_seconds: 300
+    required_consecutive_hits: 1
+    notify_feishu: true
+    notify_once: true
+    enabled: true

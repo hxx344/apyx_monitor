@@ -5,6 +5,7 @@ from collections.abc import Generator
 from sqlalchemy import event, text
 from sqlmodel import Session, SQLModel, create_engine
 
+from . import models as _models  # noqa: F401
 from .config import get_settings
 
 

@@ -178,8 +178,18 @@ class MonitoringService:
                         details_json=json.dumps(point.details, ensure_ascii=False),
                     )
                 )
-            latest_metrics = self._latest_metric_map(all_points)
+            event_points = [point for point in all_points if point.details.get("alert_fingerprint")]
+            latest_metrics = self._latest_metric_map(
+                [point for point in all_points if not point.details.get("alert_fingerprint")]
+            )
             evaluation = self.rule_engine.evaluate(session, latest_metrics)
+            for point in event_points:
+                event_evaluation = self.rule_engine.evaluate(
+                    session,
+                    {(point.entity_id, point.metric_name): self._metric_payload(point)},
+                )
+                evaluation.events.extend(event_evaluation.events)
+                evaluation.notifications.extend(event_evaluation.notifications)
             session.commit()
         return evaluation
 
@@ -202,11 +212,15 @@ class MonitoringService:
             key = (point.entity_id, point.metric_name)
             existing = latest.get(key)
             if existing is None or point.recorded_at >= existing["recorded_at"]:
-                latest[key] = {
-                    "value": point.value,
-                    "unit": point.unit,
-                    "source": point.source,
-                    "recorded_at": point.recorded_at,
-                    "details": point.details,
-                }
+                latest[key] = MonitoringService._metric_payload(point)
         return latest
+
+    @staticmethod
+    def _metric_payload(point: MetricPoint) -> dict:
+        return {
+            "value": point.value,
+            "unit": point.unit,
+            "source": point.source,
+            "recorded_at": point.recorded_at,
+            "details": point.details,
+        }

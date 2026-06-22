@@ -49,3 +49,11 @@ class AlertRuleOverride(SQLModel, table=True):
     rule_id: str = Field(sa_column=Column(String, unique=True, index=True, nullable=False))
     threshold: float = Field(sa_column=Column(Float, nullable=False))
     updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class OnChainEventCursor(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    cursor_id: str = Field(sa_column=Column(String, unique=True, index=True, nullable=False))
+    chain: str = Field(index=True)
+    last_scanned_block: int
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
