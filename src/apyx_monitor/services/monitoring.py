@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session
 
-from ..collectors import ArbitrageCollector, MorphoCollector, OnChainCollector
+from ..collectors import ArbitrageCollector, FinnhubStockCollector, MorphoCollector, OnChainCollector
 from ..collectors.base import BaseCollector, MetricPoint
 from ..config import get_asset_catalog, get_rule_catalog, get_settings
 from ..db import engine
@@ -26,6 +26,7 @@ class MonitoringService:
         self.rule_catalog = get_rule_catalog()
         self.onchain_collector = OnChainCollector(self.settings, self.asset_catalog)
         self.arbitrage_collector = ArbitrageCollector(self.settings, self.asset_catalog)
+        self.finnhub_stock_collector = FinnhubStockCollector(self.settings, self.asset_catalog)
         self.collectors = [
             self.onchain_collector,
             MorphoCollector(self.settings, self.asset_catalog),
@@ -33,6 +34,7 @@ class MonitoringService:
         ]
         self.rule_engine = RuleEngine(self.rule_catalog, FeishuNotifier(self.settings))
         self._lock = asyncio.Lock()
+        self._finnhub_stock_lock = asyncio.Lock()
         self.last_run_at: datetime | None = None
         self.last_run_status: str = "never"
         self.last_errors: dict[str, str] = {}
@@ -42,6 +44,9 @@ class MonitoringService:
         self.last_arbitrage_run_at: datetime | None = None
         self.last_arbitrage_status: str = "never"
         self.last_arbitrage_errors: dict[str, str] = {}
+        self.last_finnhub_stock_run_at: datetime | None = None
+        self.last_finnhub_stock_status: str = "never"
+        self.last_finnhub_stock_errors: dict[str, str] = {}
 
     async def poll_once(self) -> dict[str, object]:
         if self._lock.locked():
@@ -137,6 +142,35 @@ class MonitoringService:
             }
         finally:
             self._lock.release()
+
+    async def poll_finnhub_stock_once(self) -> dict[str, object]:
+        if self._finnhub_stock_lock.locked():
+            return {"status": "skipped", "reason": "finnhub stock poll already in progress"}
+
+        async with self._finnhub_stock_lock:
+            self.last_finnhub_stock_errors = {}
+            all_points: list[MetricPoint] = []
+            try:
+                all_points = await self.finnhub_stock_collector.collect()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Finnhub stock polling failed")
+                self.last_finnhub_stock_errors["finnhub_stock"] = str(exc)
+
+            evaluation = await asyncio.to_thread(self._persist_and_evaluate, all_points)
+            await self._send_notifications(
+                evaluation.notifications,
+                self.last_finnhub_stock_errors,
+            )
+
+            self.last_finnhub_stock_run_at = datetime.now(timezone.utc)
+            self.last_finnhub_stock_status = "partial_failure" if self.last_finnhub_stock_errors else "ok"
+            return {
+                "status": self.last_finnhub_stock_status,
+                "collected_metrics": len(all_points),
+                "alerts_touched": len(evaluation.events),
+                "errors": self.last_finnhub_stock_errors,
+                "last_run_at": self.last_finnhub_stock_run_at.isoformat(),
+            }
 
     async def _collect_all(self) -> tuple[list[MetricPoint], dict[str, str]]:
         results = []

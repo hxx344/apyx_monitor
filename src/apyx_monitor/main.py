@@ -24,6 +24,7 @@ async def lifespan(app: FastAPI):
     app.state.scheduler = scheduler
     scheduler.start()
     asyncio.create_task(service.poll_once())
+    asyncio.create_task(service.poll_finnhub_stock_once())
     try:
         yield
     finally:

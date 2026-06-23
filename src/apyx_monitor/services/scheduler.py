@@ -39,4 +39,13 @@ def build_scheduler(service: MonitoringService) -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        service.poll_finnhub_stock_once,
+        "interval",
+        seconds=max(5, settings.finnhub_stock_interval_seconds),
+        id="apyx-monitor-finnhub-stock-poll",
+        start_date=datetime.now(timezone.utc) + timedelta(seconds=3),
+        max_instances=1,
+        coalesce=True,
+    )
     return scheduler

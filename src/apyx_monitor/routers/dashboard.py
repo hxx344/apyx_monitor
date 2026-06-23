@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from ..collectors.finnhub_stock import FINNHUB_STOCK_ENTITY_ID
 from ..config import RuleDefinition, Settings, get_asset_catalog, get_rule_catalog, get_settings
 from ..db import get_session
 from ..models import AlertEvent, AlertRuleOverride, MetricSnapshot, utc_now
@@ -465,6 +466,187 @@ def _build_chart_table(series_list: list[dict], limit: int = 12) -> str:
             cells.append(f"<td>{escape(_format_value(series['metric_name'], point_map.get(timestamp)))}</td>")
         rows.append(f"<tr>{''.join(cells)}</tr>")
     return f'<div class="trend-table-wrap"><table class="trend-table"><thead><tr>{"".join(header)}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+
+
+def _metric_details(metric: MetricSnapshot | None) -> dict:
+    if not metric or not metric.details_json:
+        return {}
+    try:
+        payload = json.loads(metric.details_json)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _stock_candles(session: Session, hours: int) -> list[dict]:
+    bucket_minutes = 1 if hours <= 6 else 5 if hours <= 24 else 15
+    since_at = datetime.now(timezone.utc) - timedelta(hours=hours)
+    rows = session.exec(
+        select(MetricSnapshot)
+        .where(
+            MetricSnapshot.entity_id == FINNHUB_STOCK_ENTITY_ID,
+            MetricSnapshot.metric_name == "price_usd",
+            MetricSnapshot.recorded_at >= since_at,
+        )
+        .order_by(MetricSnapshot.recorded_at.asc(), MetricSnapshot.id.asc())
+    ).all()
+    buckets: dict[datetime, list[MetricSnapshot]] = defaultdict(list)
+    interval_seconds = bucket_minutes * 60
+    for row in rows:
+        recorded_at = _ensure_utc(row.recorded_at)
+        bucket_ts = int(recorded_at.timestamp() // interval_seconds * interval_seconds)
+        bucket_at = datetime.fromtimestamp(bucket_ts, tz=timezone.utc)
+        buckets[bucket_at].append(row)
+
+    candles = []
+    for bucket_at, bucket_rows in sorted(buckets.items()):
+        values = [row.value for row in bucket_rows]
+        if not values:
+            continue
+        candles.append(
+            {
+                "at": bucket_at,
+                "open": values[0],
+                "high": max(values),
+                "low": min(values),
+                "close": values[-1],
+            }
+        )
+    return candles
+
+
+def _build_candlestick_svg(candles: list[dict], width: int = 760, height: int = 280) -> str:
+    if not candles:
+        return '<div class="empty">No STRC price history yet</div>'
+
+    padding_left = 58
+    padding_right = 18
+    padding_top = 18
+    padding_bottom = 30
+    plot_width = width - padding_left - padding_right
+    plot_height = height - padding_top - padding_bottom
+    min_value = min(candle["low"] for candle in candles)
+    max_value = max(candle["high"] for candle in candles)
+    if min_value == max_value:
+        min_value -= 0.01
+        max_value += 0.01
+    else:
+        padding = (max_value - min_value) * 0.14
+        min_value -= padding
+        max_value += padding
+
+    def y_for(value: float) -> float:
+        ratio = (value - min_value) / (max_value - min_value)
+        return padding_top + plot_height * (1 - ratio)
+
+    step_x = plot_width / max(len(candles), 1)
+    body_width = max(3.0, min(12.0, step_x * 0.58))
+    nodes = []
+    for index, candle in enumerate(candles):
+        x = padding_left + step_x * index + step_x / 2
+        open_y = y_for(candle["open"])
+        close_y = y_for(candle["close"])
+        high_y = y_for(candle["high"])
+        low_y = y_for(candle["low"])
+        color = "#34d399" if candle["close"] >= candle["open"] else "#fb7185"
+        body_y = min(open_y, close_y)
+        body_height = max(abs(close_y - open_y), 1.5)
+        label = _format_dt(candle["at"], "%m-%d %H:%M")
+        tooltip = (
+            f'{label} O {_format_value("price_usd", candle["open"])} '
+            f'H {_format_value("price_usd", candle["high"])} '
+            f'L {_format_value("price_usd", candle["low"])} '
+            f'C {_format_value("price_usd", candle["close"])}'
+        )
+        nodes.append(
+            f'<g class="candle-node" data-label="{escape(label)}" data-value="{escape(tooltip)}">'
+            f'<line x1="{x:.2f}" y1="{high_y:.2f}" x2="{x:.2f}" y2="{low_y:.2f}" stroke="{color}" stroke-width="1.4" />'
+            f'<rect x="{x - body_width / 2:.2f}" y="{body_y:.2f}" width="{body_width:.2f}" height="{body_height:.2f}" rx="1.5" fill="{color}" opacity="0.86" />'
+            "</g>"
+        )
+
+    grid_lines = []
+    y_axis = []
+    for y_ratio, value in (
+        (0, max_value),
+        (0.5, (max_value + min_value) / 2),
+        (1, min_value),
+    ):
+        y = padding_top + plot_height * y_ratio
+        grid_lines.append(
+            f'<line x1="{padding_left}" y1="{y:.1f}" x2="{width - padding_right}" y2="{y:.1f}" stroke="rgba(148,163,184,0.12)" stroke-width="1" />'
+        )
+        y_axis.append(
+            f'<text x="6" y="{y + 4:.1f}" fill="#94a3b8" font-size="11">{escape(_format_value("price_usd", value))}</text>'
+        )
+
+    x_labels = []
+    for index in {0, len(candles) // 2, len(candles) - 1}:
+        candle = candles[index]
+        x = padding_left + step_x * index + step_x / 2
+        x_labels.append(
+            f'<text x="{x:.1f}" y="{height - 8}" text-anchor="middle" fill="#94a3b8" font-size="11">{escape(_format_dt(candle["at"], "%m-%d %H:%M"))}</text>'
+        )
+
+    return (
+        f'<svg viewBox="0 0 {width} {height}" class="chart-svg candle-chart" preserveAspectRatio="none">'
+        + "".join(grid_lines)
+        + "".join(y_axis)
+        + "".join(nodes)
+        + "".join(x_labels)
+        + "</svg>"
+    )
+
+
+def _render_stock_panel(
+    session: Session,
+    latest_map: dict[tuple[str, str], MetricSnapshot],
+    hours: int,
+) -> str:
+    price_metric = latest_map.get((FINNHUB_STOCK_ENTITY_ID, "price_usd"))
+    details = _metric_details(price_metric)
+    phase = details.get("market_phase", "待配置" if price_metric is None else "未知")
+    session_name = details.get("market_session", "-")
+    previous_close = details.get("previous_close")
+    change = details.get("change")
+    change_pct = details.get("change_pct")
+    updated_at = f"{_format_dt(price_metric.recorded_at)} 北京时间" if price_metric else "-"
+    change_text = "-"
+    if isinstance(change, (int, float)) and isinstance(change_pct, (int, float)):
+        change_text = f"{change:+.4f} / {change_pct:+.2f}%"
+    candles = _stock_candles(session, hours)
+    latest_candle = candles[-1] if candles else None
+    latest_ohlc = "-"
+    if latest_candle:
+        latest_ohlc = (
+            f'O {_format_value("price_usd", latest_candle["open"])} · '
+            f'H {_format_value("price_usd", latest_candle["high"])} · '
+            f'L {_format_value("price_usd", latest_candle["low"])} · '
+            f'C {_format_value("price_usd", latest_candle["close"])}'
+        )
+    return f'''
+        <div class="panel full stock-panel">
+          <div class="panel-head">
+            <div>
+              <h3>STRC 实时价格</h3>
+              <p class="panel-subtitle">Finnhub REST 采样；后端默认每 10 秒刷新一次，K 线由采样价格聚合生成。</p>
+            </div>
+            <div class="stock-phase">{escape(str(phase))}</div>
+          </div>
+          <div class="stock-stats">
+            <div><span>当前价</span><strong>{escape(_format_value("price_usd", price_metric.value if price_metric else None))}</strong></div>
+            <div><span>阶段</span><strong>{escape(str(phase))}</strong><em>{escape(str(session_name))}</em></div>
+            <div><span>涨跌</span><strong>{escape(change_text)}</strong></div>
+            <div><span>昨收</span><strong>{escape(_format_value("price_usd", previous_close))}</strong></div>
+            <div><span>最新 K 线</span><strong>{escape(latest_ohlc)}</strong></div>
+            <div><span>更新时间</span><strong>{escape(updated_at)}</strong></div>
+          </div>
+          <div class="chart-view active" data-view="chart">
+            <div class="chart-wrap stock-chart-wrap">{_build_candlestick_svg(candles)}</div>
+            <div class="chart-tooltip" hidden></div>
+          </div>
+        </div>
+        '''
 
 
 def _render_cards(session: Session, latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
@@ -1135,6 +1317,7 @@ def _render_dashboard_data(
     <div class="cards">{_render_cards(session, latest_map)}</div>
 
     <div class="grid">
+            {_render_stock_panel(session, latest_map, hours)}
             {_render_arbitrage_section(latest_map)}
             {_render_threshold_controls(rule_map, latest_map, hours, threshold_updated)}
             {_render_charts(session, hours)}
@@ -1350,6 +1533,15 @@ def dashboard(
     .morpho-panel {{ height: 100%; display: flex; flex-direction: column; }}
     .table-wrap {{ flex: 1; overflow: auto; }}
     .chart-wrap {{ height: 280px; width: 100%; position: relative; border-radius: 14px; background: radial-gradient(circle at top left, rgba(96,165,250,0.06), transparent 35%), linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); padding: 4px; }}
+    .stock-panel .panel-head {{ align-items: center; }}
+    .stock-phase {{ display: inline-flex; align-items: center; justify-content: center; min-width: 70px; padding: 8px 12px; border-radius: 999px; color: #d1fae5; background: rgba(16,185,129,0.15); border: 1px solid rgba(52,211,153,0.32); font-size: 13px; font-weight: 700; }}
+    .stock-stats {{ display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }}
+    .stock-stats div {{ min-width: 0; padding: 11px 12px; border-radius: 12px; border: 1px solid rgba(148,163,184,0.12); background: rgba(15,23,42,0.48); }}
+    .stock-stats span {{ display: block; color: var(--muted); font-size: 11px; margin-bottom: 5px; }}
+    .stock-stats strong {{ display: block; color: #e2e8f0; font-size: 15px; line-height: 1.2; overflow-wrap: anywhere; }}
+    .stock-stats em {{ display: block; color: var(--muted); font-size: 11px; font-style: normal; margin-top: 3px; }}
+    .stock-chart-wrap {{ height: 320px; }}
+    .candle-node {{ cursor: crosshair; }}
     .chart-svg {{ width: 100%; height: 100%; display: block; }}
     .legend {{ display: flex; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }}
     .legend-item {{ color: var(--muted); font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }}
@@ -1391,6 +1583,7 @@ def dashboard(
             .panel-actions {{ align-items: flex-start; max-width: 100%; }}
       .legend {{ justify-content: flex-start; }}
       .arb-summary {{ grid-template-columns: 1fr; }}
+      .stock-stats {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
     }}
   </style>
 </head>
@@ -1468,6 +1661,23 @@ def dashboard(
                             tooltip.style.top = `${{event.clientY - panelRect.top - 8}}px`;
                         }});
                         point.addEventListener('mouseleave', () => {{
+                            tooltip.hidden = true;
+                        }});
+                    }});
+                    panel.querySelectorAll('.candle-node').forEach((candle) => {{
+                        candle.addEventListener('mouseenter', (event) => {{
+                            tooltip.hidden = false;
+                            tooltip.innerHTML = `<div><strong>STRC K线</strong></div><div>${{candle.dataset.value}}</div>`;
+                            const panelRect = panel.getBoundingClientRect();
+                            tooltip.style.left = `${{event.clientX - panelRect.left + 14}}px`;
+                            tooltip.style.top = `${{event.clientY - panelRect.top - 8}}px`;
+                        }});
+                        candle.addEventListener('mousemove', (event) => {{
+                            const panelRect = panel.getBoundingClientRect();
+                            tooltip.style.left = `${{event.clientX - panelRect.left + 14}}px`;
+                            tooltip.style.top = `${{event.clientY - panelRect.top - 8}}px`;
+                        }});
+                        candle.addEventListener('mouseleave', () => {{
                             tooltip.hidden = true;
                         }});
                     }});
@@ -1581,7 +1791,7 @@ def dashboard(
             refreshForm.querySelector('select[name="hours"]').addEventListener('change', refreshDashboard);
             arbitrageRefreshButton.addEventListener('click', refreshArbitrage);
 
-            refreshTimer = window.setInterval(refreshDashboard, 60000);
+            refreshTimer = window.setInterval(refreshDashboard, 10000);
             window.addEventListener('beforeunload', () => {{
                 if (refreshTimer) window.clearInterval(refreshTimer);
             }});
