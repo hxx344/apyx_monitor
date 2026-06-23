@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -51,24 +51,38 @@ class FinnhubStockCollector(BaseCollector):
                 symbol,
                 token,
             )
+            quote = quote_response.json()
+            status = status_response.json()
+            session = status.get("session") or "closed"
+            candle_payload = None
+            if session in {"pre-market", "post-market"}:
+                candle_payload = await self._fetch_recent_candle(client, symbol, token)
 
-        quote = quote_response.json()
-        status = status_response.json()
-        current_price = self._to_float(quote.get("c"))
+        quote_price = self._to_float(quote.get("c"))
+        candle_price = self._latest_candle_close(candle_payload)
+        current_price = candle_price if candle_price is not None else quote_price
         if current_price is None or current_price <= 0:
             raise RuntimeError(f"Finnhub quote has no usable current price for {symbol}: {quote}")
 
         recorded_at = datetime.now(timezone.utc)
-        session = status.get("session") or "closed"
         phase = MARKET_PHASE_LABELS.get(session, "休市")
+        previous_close = self._to_float(quote.get("pc"))
+        change = current_price - previous_close if previous_close else self._to_float(quote.get("d"))
+        change_pct = (
+            (change / previous_close * 100)
+            if previous_close and change is not None
+            else self._to_float(quote.get("dp"))
+        )
         details = {
             "symbol": symbol,
             "market_session": session,
             "market_phase": phase,
             "market_is_open": bool(status.get("isOpen")),
-            "previous_close": self._to_float(quote.get("pc")),
-            "change": self._to_float(quote.get("d")),
-            "change_pct": self._to_float(quote.get("dp")),
+            "price_source": "stock_candle_1m" if candle_price is not None else "quote",
+            "quote_price": quote_price,
+            "previous_close": previous_close,
+            "change": change,
+            "change_pct": change_pct,
             "open": self._to_float(quote.get("o")),
             "high": self._to_float(quote.get("h")),
             "low": self._to_float(quote.get("l")),
@@ -115,6 +129,38 @@ class FinnhubStockCollector(BaseCollector):
         quote_response.raise_for_status()
         status_response.raise_for_status()
         return quote_response, status_response
+
+    async def _fetch_recent_candle(
+        self,
+        client: httpx.AsyncClient,
+        symbol: str,
+        token: str,
+    ) -> dict | None:
+        now = datetime.now(timezone.utc)
+        response = await client.get(
+            f"{self.base_url}/stock/candle",
+            params={
+                "symbol": symbol,
+                "resolution": "1",
+                "from": int((now - timedelta(hours=6)).timestamp()),
+                "to": int(now.timestamp()),
+                "token": token,
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("s") != "ok":
+            return None
+        return payload
+
+    @classmethod
+    def _latest_candle_close(cls, payload: dict | None) -> float | None:
+        if not payload:
+            return None
+        closes = payload.get("c")
+        if not isinstance(closes, list) or not closes:
+            return None
+        return cls._to_float(closes[-1])
 
     @staticmethod
     async def _gather(*awaitables):

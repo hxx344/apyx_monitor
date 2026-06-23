@@ -104,6 +104,12 @@ async def _run_finnhub_stock_collector_test(monkeypatch):
                         "t": 1782144000,
                     },
                 )
+            if url.endswith("/stock/candle"):
+                return httpx.Response(
+                    200,
+                    request=request,
+                    json={"s": "ok", "t": [1782144000], "c": [82.5]},
+                )
             return httpx.Response(
                 200,
                 request=request,
@@ -119,9 +125,12 @@ async def _run_finnhub_stock_collector_test(monkeypatch):
     metrics = await collector.collect()
     by_name = {metric.metric_name: metric for metric in metrics}
 
-    assert by_name["price_usd"].value == 81.25
+    assert by_name["price_usd"].value == 82.5
     assert by_name["price_usd"].details["market_phase"] == "盘前"
+    assert by_name["price_usd"].details["price_source"] == "stock_candle_1m"
+    assert by_name["price_usd"].details["quote_price"] == 81.25
     assert by_name["price_usd"].details["previous_close"] == 80.0
+    assert by_name["price_usd"].details["change"] == 2.5
     assert by_name["market_phase_code"].value == 1.0
 
 
