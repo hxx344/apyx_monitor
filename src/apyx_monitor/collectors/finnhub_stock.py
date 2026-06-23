@@ -16,9 +16,9 @@ FINNHUB_STOCK_ENTITY_ID = "stock-strc"
 FINNHUB_STOCK_ENTITY_TYPE = "equity"
 
 MARKET_PHASE_LABELS = {
-    "pre-market": "盘前",
-    "regular": "盘中",
-    "post-market": "盘后",
+    "pre-market": "\u76d8\u524d",
+    "regular": "\u76d8\u4e2d",
+    "post-market": "\u76d8\u540e",
 }
 
 MARKET_PHASE_CODES = {
@@ -55,8 +55,16 @@ class FinnhubStockCollector(BaseCollector):
             status = status_response.json()
             session = status.get("session") or "closed"
             candle_payload = None
+            candle_error = None
             if session in {"pre-market", "post-market"}:
-                candle_payload = await self._fetch_recent_candle(client, symbol, token)
+                try:
+                    candle_payload = await self._fetch_recent_candle(client, symbol, token)
+                except httpx.HTTPError as exc:
+                    candle_error = self._safe_http_error(exc)
+                    logger.warning(
+                        "Finnhub 1m candle unavailable for extended-hours price; falling back to quote: %s",
+                        candle_error,
+                    )
 
         quote_price = self._to_float(quote.get("c"))
         candle_price = self._latest_candle_close(candle_payload)
@@ -65,7 +73,7 @@ class FinnhubStockCollector(BaseCollector):
             raise RuntimeError(f"Finnhub quote has no usable current price for {symbol}: {quote}")
 
         recorded_at = datetime.now(timezone.utc)
-        phase = MARKET_PHASE_LABELS.get(session, "休市")
+        phase = MARKET_PHASE_LABELS.get(session, "\u4f11\u5e02")
         previous_close = self._to_float(quote.get("pc"))
         change = current_price - previous_close if previous_close else self._to_float(quote.get("d"))
         change_pct = (
@@ -79,6 +87,7 @@ class FinnhubStockCollector(BaseCollector):
             "market_phase": phase,
             "market_is_open": bool(status.get("isOpen")),
             "price_source": "stock_candle_1m" if candle_price is not None else "quote",
+            "candle_error": candle_error,
             "quote_price": quote_price,
             "previous_close": previous_close,
             "change": change,
@@ -161,6 +170,12 @@ class FinnhubStockCollector(BaseCollector):
         if not isinstance(closes, list) or not closes:
             return None
         return cls._to_float(closes[-1])
+
+    @staticmethod
+    def _safe_http_error(exc: httpx.HTTPError) -> str:
+        if isinstance(exc, httpx.HTTPStatusError):
+            return f"http_{exc.response.status_code}"
+        return exc.__class__.__name__
 
     @staticmethod
     async def _gather(*awaitables):

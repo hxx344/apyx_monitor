@@ -76,6 +76,10 @@ def test_finnhub_stock_collector_maps_quote_and_market_phase(monkeypatch):
     asyncio.run(_run_finnhub_stock_collector_test(monkeypatch))
 
 
+def test_finnhub_stock_collector_falls_back_when_candle_is_unavailable(monkeypatch):
+    asyncio.run(_run_finnhub_stock_candle_fallback_test(monkeypatch))
+
+
 async def _run_finnhub_stock_collector_test(monkeypatch):
     class FakeAsyncClient:
         def __init__(self, *args, **kwargs) -> None:
@@ -132,6 +136,43 @@ async def _run_finnhub_stock_collector_test(monkeypatch):
     assert by_name["price_usd"].details["previous_close"] == 80.0
     assert by_name["price_usd"].details["change"] == 2.5
     assert by_name["market_phase_code"].value == 1.0
+
+
+async def _run_finnhub_stock_candle_fallback_test(monkeypatch):
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+        async def get(self, url: str, params: dict) -> httpx.Response:
+            request = httpx.Request("GET", url)
+            if url.endswith("/quote"):
+                return httpx.Response(200, request=request, json={"c": 88.79, "pc": 88.59})
+            if url.endswith("/stock/candle"):
+                return httpx.Response(403, request=request, json={"error": "no access"})
+            return httpx.Response(
+                200,
+                request=request,
+                json={"session": "pre-market", "isOpen": False},
+            )
+
+    monkeypatch.setattr(finnhub_stock_module.httpx, "AsyncClient", FakeAsyncClient)
+    collector = FinnhubStockCollector(
+        Settings(FINNHUB_API_KEY="token", FINNHUB_STOCK_SYMBOL="STRC"),
+        _catalog(),
+    )
+
+    metrics = await collector.collect()
+    by_name = {metric.metric_name: metric for metric in metrics}
+
+    assert by_name["price_usd"].value == 88.79
+    assert by_name["price_usd"].details["price_source"] == "quote"
+    assert by_name["price_usd"].details["candle_error"] == "http_403"
 
 
 async def _run_morpho_null_metric_test(monkeypatch):
