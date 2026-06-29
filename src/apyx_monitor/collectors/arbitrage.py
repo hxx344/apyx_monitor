@@ -20,6 +20,8 @@ PENDLE_SDK_BASE_URL = "https://api-v2.pendle.finance/core/v3/sdk"
 JUMPER_QUOTE_URL = "https://li.quest/v1/quote"
 VELORA_PRICE_URL = "https://api.paraswap.io/prices"
 ARBITRAGE_ENTITY_ID = "arb-apyusd-apxusd-crosschain"
+APXUSD_MARKET_ENTITY_ID = "apxusd-market"
+APXUSD_PRICE_METRIC = "price_usd"
 BUY_SOURCE_SELL_TARGET = "buy-source-sell-target"
 BUY_TARGET_SELL_SOURCE = "buy-target-sell-source"
 QUOTE_THROTTLE_SECONDS = 4.0
@@ -1762,6 +1764,25 @@ class ArbitrageCollector(BaseCollector):
 
         for sample in samples:
             details = self._sample_details(sample)
+            if sample.entry_apxusd_amount > 0 and sample.start_amount > 0:
+                metrics.append(
+                    MetricPoint(
+                        entity_id=APXUSD_MARKET_ENTITY_ID,
+                        entity_type="market_price",
+                        metric_name=APXUSD_PRICE_METRIC,
+                        value=float(sample.start_amount / sample.entry_apxusd_amount),
+                        unit="usd",
+                        source=sample.quote_provider,
+                        recorded_at=sample.recorded_at,
+                        details={
+                            "sample_entity_id": sample.entity_id,
+                            "monitor_id": sample.monitor.monitor_id,
+                            "strategy_id": sample.strategy_id,
+                            "notional_usd": sample.notional_usd,
+                            "entry_apxusd_amount": sample.entry_apxusd_amount,
+                        },
+                    )
+                )
             sample_metrics = [
                 ("gross_profit_usd", sample.gross_profit_usd, "usd"),
                 ("net_profit_usd", sample.net_profit_usd, "usd"),

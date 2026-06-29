@@ -17,6 +17,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from ..collectors.accountable import APXUSD_REDEMPTION_ENTITY_ID, REDEMPTION_VALUE_METRIC
+from ..collectors.arbitrage import APXUSD_MARKET_ENTITY_ID, APXUSD_PRICE_METRIC
 from ..collectors.finnhub_stock import FINNHUB_STOCK_ENTITY_ID
 from ..config import RuleDefinition, Settings, get_asset_catalog, get_rule_catalog, get_settings
 from ..db import get_session
@@ -63,6 +65,17 @@ CARD_DEFS = [
         "entity_id": "arb-apyusd-apxusd-crosschain",
         "metric_name": "best_apxusd_loop_final",
         "label": "10,000 apxUSD 闭环后",
+    },
+    {"entity_id": APXUSD_MARKET_ENTITY_ID, "metric_name": APXUSD_PRICE_METRIC, "label": "APXUSD price"},
+    {
+        "entity_id": APXUSD_REDEMPTION_ENTITY_ID,
+        "metric_name": REDEMPTION_VALUE_METRIC,
+        "label": "Redemption Value",
+    },
+    {
+        "entity_id": APXUSD_MARKET_ENTITY_ID,
+        "metric_name": "price_vs_redemption_spread_usd",
+        "label": "APXUSD - Redemption",
     },
 ]
 
@@ -126,6 +139,39 @@ CHART_DEFS = [
         ],
     },
 ]
+
+CHART_DEFS.extend(
+    [
+        {
+            "title": "APXUSD price vs Redemption Value",
+            "series": [
+                {
+                    "entity_id": APXUSD_MARKET_ENTITY_ID,
+                    "metric_name": APXUSD_PRICE_METRIC,
+                    "label": "APXUSD price",
+                    "color": "#38bdf8",
+                },
+                {
+                    "entity_id": APXUSD_REDEMPTION_ENTITY_ID,
+                    "metric_name": REDEMPTION_VALUE_METRIC,
+                    "label": "Redemption Value",
+                    "color": "#34d399",
+                },
+            ],
+        },
+        {
+            "title": "APXUSD price - Redemption Value spread",
+            "series": [
+                {
+                    "entity_id": APXUSD_MARKET_ENTITY_ID,
+                    "metric_name": "price_vs_redemption_spread_usd",
+                    "label": "Spread",
+                    "color": "#f97316",
+                },
+            ],
+        },
+    ]
+)
 
 THRESHOLD_RULE_IDS = [
     "morpho_apyusd_usdc_available_borrow_floor",

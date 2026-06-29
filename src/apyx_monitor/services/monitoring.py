@@ -5,9 +5,17 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from sqlmodel import Session
+from sqlmodel import Session, desc, select
 
-from ..collectors import ArbitrageCollector, FinnhubStockCollector, MorphoCollector, OnChainCollector
+from ..collectors import (
+    AccountableCollector,
+    ArbitrageCollector,
+    FinnhubStockCollector,
+    MorphoCollector,
+    OnChainCollector,
+)
+from ..collectors.accountable import APXUSD_REDEMPTION_ENTITY_ID, REDEMPTION_VALUE_METRIC
+from ..collectors.arbitrage import APXUSD_MARKET_ENTITY_ID, APXUSD_PRICE_METRIC
 from ..collectors.base import BaseCollector, MetricPoint
 from ..config import get_asset_catalog, get_rule_catalog, get_settings
 from ..db import engine
@@ -31,6 +39,7 @@ class MonitoringService:
             self.onchain_collector,
             MorphoCollector(self.settings, self.asset_catalog),
             self.arbitrage_collector,
+            AccountableCollector(self.settings),
         ]
         self.rule_engine = RuleEngine(self.rule_catalog, FeishuNotifier(self.settings))
         self._lock = asyncio.Lock()
@@ -199,6 +208,7 @@ class MonitoringService:
             return RuleEvaluationResult(events=[], notifications=[])
 
         with Session(engine) as session:
+            all_points = self._with_apxusd_redemption_spread(session, all_points)
             for point in all_points:
                 session.add(
                     MetricSnapshot(
@@ -226,6 +236,117 @@ class MonitoringService:
                 evaluation.notifications.extend(event_evaluation.notifications)
             session.commit()
         return evaluation
+
+    @staticmethod
+    def _with_apxusd_redemption_spread(
+        session: Session,
+        points: list[MetricPoint],
+    ) -> list[MetricPoint]:
+        price_point = MonitoringService._latest_point_for_metric(
+            points,
+            APXUSD_MARKET_ENTITY_ID,
+            APXUSD_PRICE_METRIC,
+        )
+        redemption_point = MonitoringService._latest_point_for_metric(
+            points,
+            APXUSD_REDEMPTION_ENTITY_ID,
+            REDEMPTION_VALUE_METRIC,
+        )
+        if price_point is None:
+            price_snapshot = MonitoringService._latest_snapshot(
+                session,
+                APXUSD_MARKET_ENTITY_ID,
+                APXUSD_PRICE_METRIC,
+            )
+            if price_snapshot is not None:
+                price_point = MonitoringService._point_from_snapshot(price_snapshot)
+        if redemption_point is None:
+            redemption_snapshot = MonitoringService._latest_snapshot(
+                session,
+                APXUSD_REDEMPTION_ENTITY_ID,
+                REDEMPTION_VALUE_METRIC,
+            )
+            if redemption_snapshot is not None:
+                redemption_point = MonitoringService._point_from_snapshot(redemption_snapshot)
+        if price_point is None or redemption_point is None:
+            return points
+
+        price_recorded_at = MonitoringService._as_utc(price_point.recorded_at)
+        redemption_recorded_at = MonitoringService._as_utc(redemption_point.recorded_at)
+        recorded_at = max(price_recorded_at, redemption_recorded_at)
+        spread = price_point.value - redemption_point.value
+        return [
+            *points,
+            MetricPoint(
+                entity_id=APXUSD_MARKET_ENTITY_ID,
+                entity_type="market_price",
+                metric_name="price_vs_redemption_spread_usd",
+                value=spread,
+                unit="usd",
+                source="derived",
+                recorded_at=recorded_at,
+                details={
+                    "price_usd": price_point.value,
+                    "redemption_value_usd": redemption_point.value,
+                    "price_recorded_at": price_recorded_at.isoformat(),
+                    "redemption_recorded_at": redemption_recorded_at.isoformat(),
+                },
+            ),
+        ]
+
+    @staticmethod
+    def _latest_point_for_metric(
+        points: list[MetricPoint],
+        entity_id: str,
+        metric_name: str,
+    ) -> MetricPoint | None:
+        candidates = [
+            point
+            for point in points
+            if point.entity_id == entity_id and point.metric_name == metric_name
+        ]
+        return max(candidates, key=lambda point: point.recorded_at, default=None)
+
+    @staticmethod
+    def _latest_snapshot(
+        session: Session,
+        entity_id: str,
+        metric_name: str,
+    ) -> MetricSnapshot | None:
+        return session.exec(
+            select(MetricSnapshot)
+            .where(MetricSnapshot.entity_id == entity_id)
+            .where(MetricSnapshot.metric_name == metric_name)
+            .order_by(desc(MetricSnapshot.recorded_at), desc(MetricSnapshot.id))
+            .limit(1)
+        ).first()
+
+    @staticmethod
+    def _point_from_snapshot(snapshot: MetricSnapshot) -> MetricPoint:
+        details = {}
+        if snapshot.details_json:
+            try:
+                payload = json.loads(snapshot.details_json)
+                if isinstance(payload, dict):
+                    details = payload
+            except json.JSONDecodeError:
+                pass
+        return MetricPoint(
+            entity_id=snapshot.entity_id,
+            entity_type=snapshot.entity_type,
+            metric_name=snapshot.metric_name,
+            value=snapshot.value,
+            unit=snapshot.unit,
+            source=snapshot.source,
+            recorded_at=MonitoringService._as_utc(snapshot.recorded_at),
+            details=details,
+        )
+
+    @staticmethod
+    def _as_utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
     async def _send_notifications(
         self,

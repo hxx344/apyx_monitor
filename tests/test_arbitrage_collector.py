@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -8,6 +9,8 @@ import httpx
 from apyx_monitor.collectors import arbitrage as arbitrage_module
 from apyx_monitor.collectors import pendle_rate_limit
 from apyx_monitor.collectors.arbitrage import (
+    APXUSD_MARKET_ENTITY_ID,
+    APXUSD_PRICE_METRIC,
     ARBITRAGE_ENTITY_ID,
     BUY_SOURCE_SELL_TARGET,
     BUY_TARGET_SELL_SOURCE,
@@ -447,6 +450,37 @@ def test_stale_cached_best_does_not_get_a_fresh_timestamp():
         and metric.metric_name == "best_net_profit_usd"
         for metric in metrics
     )
+
+
+def test_arbitrage_samples_emit_apxusd_price_from_entry_quote():
+    monitor = ArbitrageMonitorDefinition(
+        monitor_id="arb-ethereum-base",
+        label="Ethereum <-> Base",
+        source_chain="ethereum",
+        target_chain="base",
+        funding_asset_id="usdc-ethereum",
+        start_asset_id="apxusd-ethereum",
+        intermediate_asset_id="apyusd-ethereum",
+        final_asset_id="apxusd-base",
+        notionals_usd=[10000],
+    )
+    collector = ArbitrageCollector(Settings(), _minimal_catalog())
+    sample = replace(
+        _dummy_sample(monitor, "apx-price", 0.0, datetime.now(timezone.utc)),
+        start_amount=10000.0,
+        entry_apxusd_amount=12500.0,
+    )
+
+    metrics = collector._samples_to_metrics([sample])
+    price_metric = next(
+        metric
+        for metric in metrics
+        if metric.entity_id == APXUSD_MARKET_ENTITY_ID
+        and metric.metric_name == APXUSD_PRICE_METRIC
+    )
+
+    assert price_metric.value == 0.8
+    assert price_metric.details["sample_entity_id"] == sample.entity_id
 
 
 async def _run_forced_collect_bypasses_curve_nav_gate_test(monkeypatch):
