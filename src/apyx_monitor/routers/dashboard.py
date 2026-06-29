@@ -75,6 +75,8 @@ CARD_DEFS = [
     {
         "entity_id": APXUSD_MARKET_ENTITY_ID,
         "metric_name": "price_vs_redemption_spread_usd",
+        "secondary_metric_name": "price_vs_redemption_spread_pct",
+        "secondary_label": "相对 Redemption Value",
         "label": "APXUSD - Redemption",
     },
 ]
@@ -706,9 +708,20 @@ def _render_cards(session: Session, latest_map: dict[tuple[str, str], MetricSnap
             continue
 
         metric = latest_map.get((item["entity_id"], item["metric_name"]))
+        secondary_metric = (
+            latest_map.get((item["entity_id"], item["secondary_metric_name"]))
+            if item.get("secondary_metric_name")
+            else None
+        )
         value = _format_value(item["metric_name"], metric.value if metric else None)
-        recorded_at = f"{_format_dt(metric.recorded_at)} 北京时间" if metric else "-"
+        metric_times = [
+            row.recorded_at
+            for row in (metric, secondary_metric)
+            if row is not None
+        ]
+        recorded_at = f"{_format_dt(max(metric_times))} 北京时间" if metric_times else "-"
         tvl_delta = ""
+        secondary_markup = ""
         is_tvl_card = item["metric_name"] == "tvl_usd" and item["entity_id"] in {
             "apxusd",
             "apyusd",
@@ -717,12 +730,20 @@ def _render_cards(session: Session, latest_map: dict[tuple[str, str], MetricSnap
             previous_value = _metric_value_24h_ago(session, metric)
             delta_text = _format_24h_change(metric.value, previous_value, item["metric_name"])
             tvl_delta = f'<div class="delta">{escape(delta_text)}</div>'
+        if secondary_metric is not None:
+            secondary_label = item.get("secondary_label", "")
+            secondary_value = _format_value(item["secondary_metric_name"], secondary_metric.value)
+            secondary_markup = (
+                f'<div class="delta">{escape(secondary_label)}：'
+                f'{escape(secondary_value)}</div>'
+            )
         cards.append(
             f'''
             <div class="card">
               <div class="label">{escape(item["label"])}</div>
               <div class="value">{escape(value)}</div>
               {tvl_delta}
+              {secondary_markup}
               <div class="meta">更新时间：{escape(recorded_at)}</div>
             </div>
             '''

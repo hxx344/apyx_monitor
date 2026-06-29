@@ -275,8 +275,7 @@ class MonitoringService:
         redemption_recorded_at = MonitoringService._as_utc(redemption_point.recorded_at)
         recorded_at = max(price_recorded_at, redemption_recorded_at)
         spread = price_point.value - redemption_point.value
-        return [
-            *points,
+        derived_points = [
             MetricPoint(
                 entity_id=APXUSD_MARKET_ENTITY_ID,
                 entity_type="market_price",
@@ -292,6 +291,29 @@ class MonitoringService:
                     "redemption_recorded_at": redemption_recorded_at.isoformat(),
                 },
             ),
+        ]
+        if redemption_point.value:
+            derived_points.append(
+                MetricPoint(
+                    entity_id=APXUSD_MARKET_ENTITY_ID,
+                    entity_type="market_price",
+                    metric_name="price_vs_redemption_spread_pct",
+                    value=spread / redemption_point.value * 100,
+                    unit="pct",
+                    source="derived",
+                    recorded_at=recorded_at,
+                    details={
+                        "price_usd": price_point.value,
+                        "redemption_value_usd": redemption_point.value,
+                        "spread_usd": spread,
+                        "price_recorded_at": price_recorded_at.isoformat(),
+                        "redemption_recorded_at": redemption_recorded_at.isoformat(),
+                    },
+                )
+            )
+        return [
+            *points,
+            *derived_points,
         ]
 
     @staticmethod

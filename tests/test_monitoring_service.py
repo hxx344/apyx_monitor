@@ -65,8 +65,15 @@ def test_apxusd_redemption_spread_is_derived_from_collected_points():
     ]
 
     enriched = MonitoringService._with_apxusd_redemption_spread(None, points)
-    spread = enriched[-1]
+    spread = next(
+        point for point in enriched if point.metric_name == "price_vs_redemption_spread_usd"
+    )
+    spread_pct = next(
+        point for point in enriched if point.metric_name == "price_vs_redemption_spread_pct"
+    )
 
     assert spread.entity_id == APXUSD_MARKET_ENTITY_ID
     assert spread.metric_name == "price_vs_redemption_spread_usd"
     assert round(spread.value, 10) == 0.03
+    assert spread_pct.entity_id == APXUSD_MARKET_ENTITY_ID
+    assert round(spread_pct.value, 10) == round(0.03 / 0.79 * 100, 10)
