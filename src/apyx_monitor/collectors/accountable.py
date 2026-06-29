@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -11,6 +12,19 @@ from .base import BaseCollector, MetricPoint
 ACCOUNTABLE_DASHBOARD_URL = "https://api.accountable.apyx.fi/dashboard"
 APXUSD_REDEMPTION_ENTITY_ID = "apxusd-redemption"
 REDEMPTION_VALUE_METRIC = "redemption_value_usd"
+ACCOUNTABLE_REQUEST_HEADERS = {
+    "accept": "application/json, text/plain, */*",
+    "accept-language": "en-US,en;q=0.9",
+    "origin": "https://accountable.apyx.fi",
+    "referer": "https://accountable.apyx.fi/",
+    "user-agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0.0.0 Safari/537.36"
+    ),
+}
+
+logger = logging.getLogger(__name__)
 
 
 class AccountableCollector(BaseCollector):
@@ -22,7 +36,16 @@ class AccountableCollector(BaseCollector):
     async def collect(self) -> list[MetricPoint]:
         timeout = httpx.Timeout(self.settings.http_timeout_seconds)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get(ACCOUNTABLE_DASHBOARD_URL)
+            response = await client.get(
+                ACCOUNTABLE_DASHBOARD_URL,
+                headers=ACCOUNTABLE_REQUEST_HEADERS,
+            )
+            if response.status_code in {403, 429}:
+                logger.warning(
+                    "Accountable dashboard unavailable; skipping redemption value: http_%s",
+                    response.status_code,
+                )
+                return []
             response.raise_for_status()
             payload = response.json()
 
