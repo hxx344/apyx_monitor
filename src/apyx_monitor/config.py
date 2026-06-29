@@ -50,6 +50,10 @@ class Settings(BaseSettings):
         default=100, alias="APPROVAL_MONITOR_MAX_BLOCK_RANGE"
     )
     http_timeout_seconds: int = Field(default=15, alias="HTTP_TIMEOUT_SECONDS")
+    accountable_dashboard_url: str = Field(
+        default="https://api.accountable.apyx.fi/dashboard",
+        alias="ACCOUNTABLE_DASHBOARD_URL",
+    )
     dashboard_username: str = Field(default="admin", alias="DASHBOARD_USERNAME")
     dashboard_password: str = Field(default="admin", alias="DASHBOARD_PASSWORD")
     dashboard_session_secret: str = Field(default="change-me", alias="DASHBOARD_SESSION_SECRET")

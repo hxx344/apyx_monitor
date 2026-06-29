@@ -15,10 +15,19 @@ REDEMPTION_VALUE_METRIC = "redemption_value_usd"
 ACCOUNTABLE_REQUEST_HEADERS = {
     "accept": "application/json, text/plain, */*",
     "accept-language": "en-US,en;q=0.9",
+    "cache-control": "no-cache",
     "origin": "https://accountable.apyx.fi",
+    "pragma": "no-cache",
+    "priority": "u=1, i",
     "referer": "https://accountable.apyx.fi/",
+    "sec-ch-ua": '"Google Chrome";v="126", "Chromium";v="126", "Not/A)Brand";v="8"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Linux"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-site",
     "user-agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "Mozilla/5.0 (X11; Linux x86_64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/126.0.0.0 Safari/537.36"
     ),
@@ -35,14 +44,18 @@ class AccountableCollector(BaseCollector):
 
     async def collect(self) -> list[MetricPoint]:
         timeout = httpx.Timeout(self.settings.http_timeout_seconds)
+        dashboard_url = self.settings.accountable_dashboard_url
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(
-                ACCOUNTABLE_DASHBOARD_URL,
+                dashboard_url,
                 headers=ACCOUNTABLE_REQUEST_HEADERS,
+                follow_redirects=True,
             )
             if response.status_code in {403, 429}:
                 logger.warning(
-                    "Accountable dashboard unavailable; skipping redemption value: http_%s",
+                    "Accountable dashboard unavailable; skipping redemption value: "
+                    "url=%s status=http_%s",
+                    dashboard_url,
                     response.status_code,
                 )
                 return []
@@ -60,7 +73,7 @@ class AccountableCollector(BaseCollector):
                 unit="usd",
                 source="accountable_api",
                 recorded_at=recorded_at,
-                details={"url": ACCOUNTABLE_DASHBOARD_URL},
+                details={"url": dashboard_url},
             )
         ]
 

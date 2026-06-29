@@ -48,6 +48,8 @@ def test_collect_sends_browser_headers(monkeypatch):
     assert points[0].value == 0.7907
     assert captured_headers["origin"] == "https://accountable.apyx.fi"
     assert captured_headers["referer"] == "https://accountable.apyx.fi/"
+    assert captured_headers["sec-fetch-site"] == "same-site"
+    assert captured_headers["sec-ch-ua-platform"] == '"Linux"'
     assert "Mozilla/5.0" in captured_headers["user-agent"]
 
 
@@ -66,3 +68,31 @@ def test_collect_skips_forbidden_response(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", mock_client)
 
     assert asyncio.run(AccountableCollector(Settings()).collect()) == []
+
+
+def test_collect_uses_configured_dashboard_url(monkeypatch):
+    configured_url = "https://example.test/accountable-dashboard"
+    requested_urls = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={"data": {"reserves": {"redemption_value": 0.8123}, "ts": "1782721084666"}},
+        )
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+
+    def mock_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", mock_client)
+
+    settings = Settings(accountable_dashboard_url=configured_url)
+    points = asyncio.run(AccountableCollector(settings).collect())
+
+    assert requested_urls == [configured_url]
+    assert points[0].details["url"] == configured_url
+    assert points[0].value == 0.8123
