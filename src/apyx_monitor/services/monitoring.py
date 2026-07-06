@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import delete
 from sqlmodel import Session, desc, select
 
 from ..collectors import (
@@ -22,7 +23,6 @@ from ..db import engine
 from ..models import MetricSnapshot
 from .alerting import FeishuNotifier
 from .rule_engine import NotificationMessage, RuleEngine, RuleEvaluationResult
-
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,7 @@ class MonitoringService:
         self.last_finnhub_stock_run_at: datetime | None = None
         self.last_finnhub_stock_status: str = "never"
         self.last_finnhub_stock_errors: dict[str, str] = {}
+        self._last_metric_retention_cleanup_at: datetime | None = None
 
     async def poll_once(self) -> dict[str, object]:
         if self._lock.locked():
@@ -172,7 +173,9 @@ class MonitoringService:
             )
 
             self.last_finnhub_stock_run_at = datetime.now(timezone.utc)
-            self.last_finnhub_stock_status = "partial_failure" if self.last_finnhub_stock_errors else "ok"
+            self.last_finnhub_stock_status = (
+                "partial_failure" if self.last_finnhub_stock_errors else "ok"
+            )
             return {
                 "status": self.last_finnhub_stock_status,
                 "collected_metrics": len(all_points),
@@ -204,10 +207,12 @@ class MonitoringService:
             return collector.name, [], str(exc)
 
     def _persist_and_evaluate(self, all_points: list[MetricPoint]) -> RuleEvaluationResult:
-        if not all_points:
-            return RuleEvaluationResult(events=[], notifications=[])
-
         with Session(engine) as session:
+            self._cleanup_old_metric_snapshots(session)
+            if not all_points:
+                session.commit()
+                return RuleEvaluationResult(events=[], notifications=[])
+
             all_points = self._with_apxusd_redemption_spread(session, all_points)
             for point in all_points:
                 session.add(
@@ -236,6 +241,33 @@ class MonitoringService:
                 evaluation.notifications.extend(event_evaluation.notifications)
             session.commit()
         return evaluation
+
+    def _cleanup_old_metric_snapshots(self, session: Session) -> None:
+        retention_days = self.settings.metric_retention_days
+        if retention_days <= 0:
+            return
+
+        now = datetime.now(timezone.utc)
+        interval_seconds = self.settings.metric_retention_cleanup_interval_seconds
+        if (
+            self._last_metric_retention_cleanup_at is not None
+            and interval_seconds > 0
+            and (now - self._last_metric_retention_cleanup_at).total_seconds() < interval_seconds
+        ):
+            return
+
+        cutoff_at = now - timedelta(days=retention_days)
+        result = session.exec(
+            delete(MetricSnapshot).where(MetricSnapshot.recorded_at < cutoff_at)
+        )
+        deleted_count = result.rowcount or 0
+        if deleted_count:
+            logger.info(
+                "Deleted old metric snapshots for retention policy: count=%s cutoff=%s",
+                deleted_count,
+                cutoff_at.isoformat(),
+            )
+        self._last_metric_retention_cleanup_at = now
 
     @staticmethod
     def _with_apxusd_redemption_spread(

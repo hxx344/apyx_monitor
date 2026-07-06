@@ -9,7 +9,6 @@ import yaml
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_DIR = PROJECT_ROOT / "config"
 DATA_DIR = PROJECT_ROOT / "data"
@@ -22,6 +21,11 @@ class Settings(BaseSettings):
         alias="DATABASE_URL",
     )
     collection_interval_seconds: int = Field(default=60, alias="COLLECTION_INTERVAL_SECONDS")
+    metric_retention_days: int = Field(default=7, alias="METRIC_RETENTION_DAYS")
+    metric_retention_cleanup_interval_seconds: int = Field(
+        default=0,
+        alias="METRIC_RETENTION_CLEANUP_INTERVAL_SECONDS",
+    )
     nav_curve_interval_seconds: int = Field(default=20, alias="NAV_CURVE_INTERVAL_SECONDS")
     arbitrage_interval_seconds: int = Field(default=600, alias="ARBITRAGE_INTERVAL_SECONDS")
     finnhub_api_key: Optional[str] = Field(default=None, alias="FINNHUB_API_KEY")

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from apyx_monitor.collectors.accountable import APXUSD_REDEMPTION_ENTITY_ID, REDEMPTION_VALUE_METRIC
 from apyx_monitor.collectors.arbitrage import APXUSD_MARKET_ENTITY_ID, APXUSD_PRICE_METRIC
@@ -77,3 +78,75 @@ def test_apxusd_redemption_spread_is_derived_from_collected_points():
     assert round(spread.value, 10) == 0.03
     assert spread_pct.entity_id == APXUSD_MARKET_ENTITY_ID
     assert round(spread_pct.value, 10) == round(0.03 / 0.79 * 100, 10)
+
+
+def test_metric_retention_cleanup_deletes_old_snapshots():
+    class FakeDeleteResult:
+        rowcount = 2
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.statement = None
+
+        def exec(self, statement):
+            self.statement = statement
+            return FakeDeleteResult()
+
+    service = object.__new__(MonitoringService)
+    service.settings = SimpleNamespace(
+        metric_retention_days=7,
+        metric_retention_cleanup_interval_seconds=0,
+    )
+    service._last_metric_retention_cleanup_at = None
+    session = FakeSession()
+
+    service._cleanup_old_metric_snapshots(session)
+
+    assert session.statement is not None
+    assert service._last_metric_retention_cleanup_at is not None
+
+
+def test_metric_retention_cleanup_respects_cleanup_interval():
+    class FakeSession:
+        def __init__(self) -> None:
+            self.called = False
+
+        def exec(self, statement):
+            self.called = True
+
+    service = object.__new__(MonitoringService)
+    service.settings = SimpleNamespace(
+        metric_retention_days=30,
+        metric_retention_cleanup_interval_seconds=3600,
+    )
+    service._last_metric_retention_cleanup_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+    session = FakeSession()
+
+    service._cleanup_old_metric_snapshots(session)
+
+    assert session.called is False
+
+
+def test_metric_retention_cleanup_runs_every_time_when_interval_is_zero():
+    class FakeDeleteResult:
+        rowcount = 0
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def exec(self, statement):
+            self.calls += 1
+            return FakeDeleteResult()
+
+    service = object.__new__(MonitoringService)
+    service.settings = SimpleNamespace(
+        metric_retention_days=7,
+        metric_retention_cleanup_interval_seconds=0,
+    )
+    service._last_metric_retention_cleanup_at = datetime.now(timezone.utc)
+    session = FakeSession()
+
+    service._cleanup_old_metric_snapshots(session)
+
+    assert session.calls == 1
