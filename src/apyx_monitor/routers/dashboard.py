@@ -89,6 +89,7 @@ CARD_DEFS = [
         "secondary_metric_name": "price_vs_redemption_spread_pct",
         "secondary_label": "相对 Redemption Value",
         "label": "APXUSD - Redemption",
+        "display": "redemption_directional_spread",
     },
 ]
 
@@ -849,6 +850,9 @@ def _render_cards(session: Session, latest_map: dict[tuple[str, str], MetricSnap
         if item.get("display") == "hedged_nav_discount":
             cards.append(_render_hedged_nav_discount_card(item, latest_map))
             continue
+        if item.get("display") == "redemption_directional_spread":
+            cards.append(_render_redemption_directional_spread_card(item, latest_map))
+            continue
 
         metric = latest_map.get((item["entity_id"], item["metric_name"]))
         secondary_metric = (
@@ -893,6 +897,38 @@ def _render_cards(session: Session, latest_map: dict[tuple[str, str], MetricSnap
         )
     cards.append(_render_redemption_ma_card(latest_map))
     return "".join(cards)
+
+
+def _render_redemption_directional_spread_card(
+    item: dict,
+    latest_map: dict[tuple[str, str], MetricSnapshot],
+) -> str:
+    spread_usd = latest_map.get((APXUSD_MARKET_ENTITY_ID, item["metric_name"]))
+    buy_spread_pct = latest_map.get((APXUSD_MARKET_ENTITY_ID, REDEMPTION_BUY_SPREAD_PCT_METRIC))
+    sell_spread_pct = latest_map.get((APXUSD_MARKET_ENTITY_ID, REDEMPTION_SELL_SPREAD_PCT_METRIC))
+    metric_times = [
+        metric.recorded_at
+        for metric in (spread_usd, buy_spread_pct, sell_spread_pct)
+        if metric is not None
+    ]
+    recorded_at = f"{_format_dt(max(metric_times))} 鍖椾含鏃堕棿" if metric_times else "-"
+    return f'''
+            <div class="card redemption-spread-card">
+              <div class="label">{escape(item["label"])}</div>
+              <div class="value">{escape(_format_value(item["metric_name"], spread_usd.value if spread_usd else None))}</div>
+              <div class="directional-spread-grid">
+                <div>
+                  <span>Buy spread</span>
+                  <strong>{escape(_format_value(REDEMPTION_BUY_SPREAD_PCT_METRIC, buy_spread_pct.value if buy_spread_pct else None))}</strong>
+                </div>
+                <div>
+                  <span>Sell spread</span>
+                  <strong>{escape(_format_value(REDEMPTION_SELL_SPREAD_PCT_METRIC, sell_spread_pct.value if sell_spread_pct else None))}</strong>
+                </div>
+              </div>
+              <div class="meta">更新时间：{escape(recorded_at)}</div>
+            </div>
+            '''
 
 
 def _render_redemption_ma_card(latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
@@ -1796,6 +1832,10 @@ def dashboard(
     .ma-card-grid div {{ min-width: 0; }}
     .ma-card-grid span {{ display: block; color: var(--muted); font-size: 12px; }}
     .ma-card-grid strong {{ display: block; margin-top: 3px; font-size: 18px; }}
+    .directional-spread-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 10px 0; }}
+    .directional-spread-grid div {{ min-width: 0; padding: 8px 10px; border-radius: 12px; background: rgba(15,23,42,0.42); border: 1px solid rgba(148,163,184,0.12); }}
+    .directional-spread-grid span {{ display: block; color: var(--muted); font-size: 12px; }}
+    .directional-spread-grid strong {{ display: block; margin-top: 3px; font-size: 18px; }}
     .card .delta {{ color: #cbd5e1; font-size: 12px; margin-bottom: 6px; }}
     .yield-pair {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 8px 0; }}
     .yield-stat {{ min-width: 0; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(148,163,184,0.12); background: rgba(15,23,42,0.48); }}

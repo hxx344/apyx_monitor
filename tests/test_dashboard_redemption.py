@@ -3,7 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from apyx_monitor.config import get_rule_catalog
-from apyx_monitor.routers.dashboard import _format_value, _moving_average_series
+from apyx_monitor.models import MetricSnapshot
+from apyx_monitor.routers.dashboard import (
+    _format_value,
+    _moving_average_series,
+    _render_redemption_directional_spread_card,
+)
 
 
 def test_moving_average_series_uses_time_window_and_sorts_points():
@@ -36,3 +41,46 @@ def test_redemption_alert_rules_use_directional_spread_metrics():
     assert rules["apxusd_redemption_spread_pct_ceiling"].metric_name == (
         "sell_price_vs_redemption_spread_pct"
     )
+
+
+def test_redemption_card_shows_buy_and_sell_spread_percentages():
+    recorded_at = datetime.now(timezone.utc)
+    latest_map = {
+        ("apxusd-market", "price_vs_redemption_spread_usd"): MetricSnapshot(
+            entity_id="apxusd-market",
+            entity_type="market_price",
+            metric_name="price_vs_redemption_spread_usd",
+            value=0.01,
+            unit="usd",
+            source="test",
+            recorded_at=recorded_at,
+        ),
+        ("apxusd-market", "buy_price_vs_redemption_spread_pct"): MetricSnapshot(
+            entity_id="apxusd-market",
+            entity_type="market_price",
+            metric_name="buy_price_vs_redemption_spread_pct",
+            value=-1.25,
+            unit="pct",
+            source="test",
+            recorded_at=recorded_at,
+        ),
+        ("apxusd-market", "sell_price_vs_redemption_spread_pct"): MetricSnapshot(
+            entity_id="apxusd-market",
+            entity_type="market_price",
+            metric_name="sell_price_vs_redemption_spread_pct",
+            value=1.75,
+            unit="pct",
+            source="test",
+            recorded_at=recorded_at,
+        ),
+    }
+
+    html = _render_redemption_directional_spread_card(
+        {"label": "APXUSD - Redemption", "metric_name": "price_vs_redemption_spread_usd"},
+        latest_map,
+    )
+
+    assert "Buy spread" in html
+    assert "-1.25%" in html
+    assert "Sell spread" in html
+    assert "1.75%" in html
