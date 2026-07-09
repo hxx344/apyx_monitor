@@ -86,6 +86,13 @@ ARBITRAGE_MONITORS = [
     monitor for monitor in get_asset_catalog().arbitrage_monitors if monitor.enabled
 ]
 ARBITRAGE_STRATEGY_IDS = ("buy-source-sell-target", "buy-target-sell-source")
+REDEMPTION_SPREAD_PCT_METRIC = "price_vs_redemption_spread_pct"
+REDEMPTION_MA_WINDOWS = (
+    ("12h MA", 12, "#f59e0b"),
+    ("24h MA", 24, "#a78bfa"),
+    ("72h MA", 72, "#22c55e"),
+    ("7d MA", 24 * 7, "#ef4444"),
+)
 
 CHART_DEFS = [
     {
@@ -360,6 +367,38 @@ def _bucket_series(
     return [(bucket_at, bucket_rows[-1].value) for bucket_at, bucket_rows in sorted(buckets.items())]
 
 
+def _moving_average_series(
+    points: list[tuple[datetime, float]],
+    window_hours: int,
+) -> list[tuple[datetime, float]]:
+    averaged: list[tuple[datetime, float]] = []
+    ordered_points = sorted(points, key=lambda point: point[0])
+    window = timedelta(hours=window_hours)
+    start_index = 0
+    running_sum = 0.0
+    active_values: list[float] = []
+
+    for timestamp, value in ordered_points:
+        active_values.append(value)
+        running_sum += value
+        cutoff_at = timestamp - window
+        while start_index < len(active_values) and ordered_points[start_index][0] < cutoff_at:
+            running_sum -= active_values[start_index]
+            start_index += 1
+        active_count = len(active_values) - start_index
+        if active_count > 0:
+            averaged.append((timestamp, running_sum / active_count))
+
+    return averaged
+
+
+def _filter_points_since(
+    points: list[tuple[datetime, float]],
+    since_at: datetime,
+) -> list[tuple[datetime, float]]:
+    return [(timestamp, value) for timestamp, value in points if timestamp >= since_at]
+
+
 def _metric_value_24h_ago(session: Session, latest_metric: MetricSnapshot) -> float | None:
     latest_at = _ensure_utc(latest_metric.recorded_at)
     cutoff_at = latest_at - timedelta(hours=24)
@@ -514,6 +553,74 @@ def _build_chart_table(series_list: list[dict], limit: int = 12) -> str:
             cells.append(f"<td>{escape(_format_value(series['metric_name'], point_map.get(timestamp)))}</td>")
         rows.append(f"<tr>{''.join(cells)}</tr>")
     return f'<div class="trend-table-wrap"><table class="trend-table"><thead><tr>{"".join(header)}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+
+
+def _render_redemption_percentage_panel(session: Session, hours: int) -> str:
+    bucket_minutes = 5 if hours <= 6 else 15 if hours <= 24 else 60
+    max_window_hours = max(window_hours for _, window_hours, _ in REDEMPTION_MA_WINDOWS)
+    display_since_at = datetime.now(timezone.utc) - timedelta(hours=hours)
+    full_points = _bucket_series(
+        session,
+        APXUSD_MARKET_ENTITY_ID,
+        REDEMPTION_SPREAD_PCT_METRIC,
+        hours + max_window_hours,
+        bucket_minutes,
+    )
+    display_points = _filter_points_since(full_points, display_since_at)
+    chart_id = "apxusd-redemption-percentage-ma"
+    series_list = [
+        {
+            "label": "Spread %",
+            "color": "#38bdf8",
+            "points": display_points,
+            "metric_name": REDEMPTION_SPREAD_PCT_METRIC,
+        }
+    ]
+    average_chips = []
+
+    for label, window_hours, color in REDEMPTION_MA_WINDOWS:
+        averaged_points = _moving_average_series(full_points, window_hours)
+        visible_points = _filter_points_since(averaged_points, display_since_at)
+        series_list.append(
+            {
+                "label": label,
+                "color": color,
+                "points": visible_points,
+                "metric_name": REDEMPTION_SPREAD_PCT_METRIC,
+            }
+        )
+        latest_average = averaged_points[-1][1] if averaged_points else None
+        average_chips.append(
+            f'<span class="legend-item">{escape(label)}: {escape(_format_value(REDEMPTION_SPREAD_PCT_METRIC, latest_average))}</span>'
+        )
+
+    legend_buttons = []
+    for index, series in enumerate(series_list):
+        last_value = series["points"][-1][1] if series["points"] else None
+        legend_buttons.append(
+            f'<button type="button" class="legend-chip active" data-chart-id="{chart_id}" data-series-index="{index}"><span class="legend-dot" style="background:{series["color"]}"></span><span>{escape(series["label"])}: {escape(_format_value(series["metric_name"], last_value))}</span></button>'
+        )
+
+    return f'''
+            <div class="panel full chart-panel">
+              <div class="panel-head">
+                <h3>APXUSD Redemption percentage trend</h3>
+                <div class="panel-actions">
+                  <div class="legend interactive-legend">{"".join(legend_buttons)}</div>
+                  <div class="view-switch" data-chart-id="{chart_id}">
+                    <button type="button" class="view-tab active" data-view="chart">鍥惧舰</button>
+                    <button type="button" class="view-tab" data-view="table">鏁版嵁</button>
+                  </div>
+                </div>
+              </div>
+              <div class="legend redemption-ma-summary">{"".join(average_chips)}</div>
+              <div class="chart-view active" data-view="chart">
+                <div class="chart-wrap">{_build_svg(series_list, chart_id)}</div>
+                <div class="chart-tooltip" hidden></div>
+              </div>
+              <div class="chart-view" data-view="table">{_build_chart_table(series_list)}</div>
+            </div>
+            '''
 
 
 def _metric_details(metric: MetricSnapshot | None) -> dict:
@@ -1388,6 +1495,7 @@ def _render_dashboard_data(
             {_render_arbitrage_section(latest_map)}
             {_render_threshold_controls(rule_map, latest_map, hours, threshold_updated)}
             {_render_charts(session, hours)}
+            {_render_redemption_percentage_panel(session, hours)}
             {_render_morpho_market_sections(session, latest_map, hours)}
             <div class="panel full">
                 <h3>Morpho 池子状态</h3>
@@ -1614,6 +1722,7 @@ def dashboard(
     .legend-item {{ color: var(--muted); font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }}
     .legend-dot {{ width: 10px; height: 10px; border-radius: 999px; display: inline-block; }}
     .interactive-legend {{ gap: 8px; }}
+    .redemption-ma-summary {{ justify-content: flex-start; margin: -4px 0 14px; }}
     .legend-chip {{ display: inline-flex; align-items: center; gap: 8px; border-radius: 999px; border: 1px solid rgba(148,163,184,0.18); background: rgba(15,23,42,0.55); color: var(--text); padding: 6px 10px; font-size: 12px; line-height: 1.3; transition: all 0.2s ease; }}
     .legend-chip.active {{ border-color: rgba(96,165,250,0.4); background: rgba(30,41,59,0.9); }}
     .legend-chip.inactive {{ opacity: 0.45; }}
