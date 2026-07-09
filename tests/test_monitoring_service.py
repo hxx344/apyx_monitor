@@ -80,6 +80,51 @@ def test_apxusd_redemption_spread_is_derived_from_collected_points():
     assert round(spread_pct.value, 10) == round(0.03 / 0.79 * 100, 10)
 
 
+def test_apxusd_redemption_spread_moving_averages_are_derived():
+    recorded_at = datetime.now(timezone.utc)
+
+    class FakeResult:
+        def all(self):
+            return [
+                SimpleNamespace(
+                    recorded_at=recorded_at - timedelta(hours=6),
+                    value=1.0,
+                ),
+                SimpleNamespace(
+                    recorded_at=recorded_at - timedelta(hours=13),
+                    value=3.0,
+                ),
+            ]
+
+    class FakeSession:
+        def exec(self, statement):
+            return FakeResult()
+
+    points = [
+        MetricPoint(
+            entity_id=APXUSD_MARKET_ENTITY_ID,
+            entity_type="market_price",
+            metric_name="price_vs_redemption_spread_pct",
+            value=5.0,
+            unit="pct",
+            source="test",
+            recorded_at=recorded_at,
+        ),
+    ]
+
+    enriched = MonitoringService._with_apxusd_redemption_moving_averages(FakeSession(), points)
+    ma_12h = next(
+        point for point in enriched if point.metric_name == "price_vs_redemption_spread_pct_ma_12h"
+    )
+    ma_24h = next(
+        point for point in enriched if point.metric_name == "price_vs_redemption_spread_pct_ma_24h"
+    )
+
+    assert ma_12h.value == 3.0
+    assert ma_24h.value == 3.0
+    assert ma_12h.unit == "pct"
+
+
 def test_metric_retention_cleanup_deletes_old_snapshots():
     class FakeDeleteResult:
         rowcount = 2

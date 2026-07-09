@@ -88,10 +88,22 @@ ARBITRAGE_MONITORS = [
 ARBITRAGE_STRATEGY_IDS = ("buy-source-sell-target", "buy-target-sell-source")
 REDEMPTION_SPREAD_PCT_METRIC = "price_vs_redemption_spread_pct"
 REDEMPTION_MA_WINDOWS = (
-    ("12h MA", 12, "#f59e0b"),
-    ("24h MA", 24, "#a78bfa"),
-    ("72h MA", 72, "#22c55e"),
-    ("7d MA", 24 * 7, "#ef4444"),
+    ("12h MA", "price_vs_redemption_spread_pct_ma_12h", 12, "#f59e0b"),
+    ("24h MA", "price_vs_redemption_spread_pct_ma_24h", 24, "#a78bfa"),
+    ("72h MA", "price_vs_redemption_spread_pct_ma_72h", 72, "#22c55e"),
+    ("7d MA", "price_vs_redemption_spread_pct_ma_7d", 24 * 7, "#ef4444"),
+)
+REDEMPTION_MA_FLOOR_RULE_IDS = (
+    "apxusd_redemption_spread_pct_ma_12h_floor",
+    "apxusd_redemption_spread_pct_ma_24h_floor",
+    "apxusd_redemption_spread_pct_ma_72h_floor",
+    "apxusd_redemption_spread_pct_ma_7d_floor",
+)
+REDEMPTION_MA_CEILING_RULE_IDS = (
+    "apxusd_redemption_spread_pct_ma_12h_ceiling",
+    "apxusd_redemption_spread_pct_ma_24h_ceiling",
+    "apxusd_redemption_spread_pct_ma_72h_ceiling",
+    "apxusd_redemption_spread_pct_ma_7d_ceiling",
 )
 
 CHART_DEFS = [
@@ -278,7 +290,12 @@ def _format_value(metric_name: str, value: float | None) -> str:
         return f"{value:.4f}x"
     if metric_name.endswith("_usd") or metric_name == "price_usd":
         return f"${value:,.0f}" if abs(value) >= 100 else f"${value:,.4f}"
-    if metric_name.endswith("_apy") or metric_name.endswith("_apr") or metric_name.endswith("_pct"):
+    if (
+        metric_name.endswith("_apy")
+        or metric_name.endswith("_apr")
+        or metric_name.endswith("_pct")
+        or "_pct_" in metric_name
+    ):
         return f"{value:.2f}%"
     return f"{value:,.4f}"
 
@@ -479,8 +496,12 @@ def _build_svg(series_list: list[dict], chart_id: str, width: int = 760, height:
         ((max_value + min_value) / 2, padding_top + plot_height / 2 + 4),
         (min_value, padding_top + plot_height + 4),
     ]
+    series_metric_names = {series["metric_name"] for series in valid_series}
+    y_axis_metric = valid_series[0]["metric_name"] if len(series_metric_names) == 1 else "value"
+    if all(metric_name.endswith("_pct") or "_pct_" in metric_name for metric_name in series_metric_names):
+        y_axis_metric = REDEMPTION_SPREAD_PCT_METRIC
     y_axis = "".join(
-        f'<text x="6" y="{y:.1f}" fill="#94a3b8" font-size="11">{escape(_format_value("value", value))}</text>'
+        f'<text x="6" y="{y:.1f}" fill="#94a3b8" font-size="11">{escape(_format_value(y_axis_metric, value))}</text>'
         for value, y in labels
     )
 
@@ -557,7 +578,7 @@ def _build_chart_table(series_list: list[dict], limit: int = 12) -> str:
 
 def _render_redemption_percentage_panel(session: Session, hours: int) -> str:
     bucket_minutes = 5 if hours <= 6 else 15 if hours <= 24 else 60
-    max_window_hours = max(window_hours for _, window_hours, _ in REDEMPTION_MA_WINDOWS)
+    max_window_hours = max(window_hours for _, _, window_hours, _ in REDEMPTION_MA_WINDOWS)
     display_since_at = datetime.now(timezone.utc) - timedelta(hours=hours)
     full_points = _bucket_series(
         session,
@@ -578,7 +599,7 @@ def _render_redemption_percentage_panel(session: Session, hours: int) -> str:
     ]
     average_chips = []
 
-    for label, window_hours, color in REDEMPTION_MA_WINDOWS:
+    for label, metric_name, window_hours, color in REDEMPTION_MA_WINDOWS:
         averaged_points = _moving_average_series(full_points, window_hours)
         visible_points = _filter_points_since(averaged_points, display_since_at)
         series_list.append(
@@ -586,7 +607,7 @@ def _render_redemption_percentage_panel(session: Session, hours: int) -> str:
                 "label": label,
                 "color": color,
                 "points": visible_points,
-                "metric_name": REDEMPTION_SPREAD_PCT_METRIC,
+                "metric_name": metric_name,
             }
         )
         latest_average = averaged_points[-1][1] if averaged_points else None
@@ -608,8 +629,8 @@ def _render_redemption_percentage_panel(session: Session, hours: int) -> str:
                 <div class="panel-actions">
                   <div class="legend interactive-legend">{"".join(legend_buttons)}</div>
                   <div class="view-switch" data-chart-id="{chart_id}">
-                    <button type="button" class="view-tab active" data-view="chart">鍥惧舰</button>
-                    <button type="button" class="view-tab" data-view="table">鏁版嵁</button>
+                    <button type="button" class="view-tab active" data-view="chart">图形</button>
+                    <button type="button" class="view-tab" data-view="table">数据</button>
                   </div>
                 </div>
               </div>
@@ -855,7 +876,33 @@ def _render_cards(session: Session, latest_map: dict[tuple[str, str], MetricSnap
             </div>
             '''
         )
+    cards.append(_render_redemption_ma_card(latest_map))
     return "".join(cards)
+
+
+def _render_redemption_ma_card(latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
+    items = []
+    metric_times = []
+    for label, metric_name, _, _ in REDEMPTION_MA_WINDOWS:
+        metric = latest_map.get((APXUSD_MARKET_ENTITY_ID, metric_name))
+        if metric is not None:
+            metric_times.append(metric.recorded_at)
+        items.append(
+            f'''
+            <div>
+              <span>{escape(label)}</span>
+              <strong>{escape(_format_value(metric_name, metric.value if metric else None))}</strong>
+            </div>
+            '''
+        )
+    recorded_at = f"{_format_dt(max(metric_times))} 北京时间" if metric_times else "-"
+    return f'''
+            <div class="card redemption-ma-card">
+              <div class="label">Redemption MA</div>
+              <div class="ma-card-grid">{"".join(items)}</div>
+              <div class="meta">更新时间：{escape(recorded_at)}</div>
+            </div>
+            '''
 
 
 def _render_hedged_nav_discount_card(
@@ -951,10 +998,12 @@ def _render_threshold_controls(
                         '''
                 )
 
-        if not rows:
+        redemption_ma_controls = _render_redemption_ma_threshold_controls(rule_map, latest_map, hours)
+
+        if not rows and not redemption_ma_controls:
                 return ""
 
-        banner = '<div class="flash success">告警阈值已更新，后续采集会按新阈值触发；仅闭环套利利润率规则发送飞书。</div>' if threshold_updated else ""
+        banner = '<div class="flash success">告警阈值已更新，后续采集会按新阈值触发；闭环套利和 Redemption MA 规则会发送飞书。</div>' if threshold_updated else ""
         return f'''
         <div class="panel full threshold-panel">
             <div class="panel-head">
@@ -964,9 +1013,48 @@ def _render_threshold_controls(
                 </div>
             </div>
             {banner}
+            {redemption_ma_controls}
             <div class="threshold-grid">{"".join(rows)}</div>
         </div>
         '''
+
+
+def _render_redemption_ma_threshold_controls(
+    rule_map: dict[str, RuleDefinition],
+    latest_map: dict[tuple[str, str], MetricSnapshot],
+    hours: int,
+) -> str:
+    floor_rule = rule_map.get(REDEMPTION_MA_FLOOR_RULE_IDS[0])
+    ceiling_rule = rule_map.get(REDEMPTION_MA_CEILING_RULE_IDS[0])
+    if floor_rule is None or ceiling_rule is None:
+        return ""
+
+    latest_items = []
+    for label, metric_name, _, _ in REDEMPTION_MA_WINDOWS:
+        metric = latest_map.get((APXUSD_MARKET_ENTITY_ID, metric_name))
+        latest_items.append(
+            f'<span class="legend-item">{escape(label)}: {escape(_format_value(metric_name, metric.value if metric else None))}</span>'
+        )
+
+    return f'''
+            <form class="threshold-card redemption-threshold-card" method="post" action="/dashboard/redemption-ma-thresholds">
+                <input type="hidden" name="hours" value="{hours}" />
+                <div class="threshold-title">Redemption MA 飞书告警</div>
+                <div class="threshold-meta">当 12h / 24h / 72h / 7d 任一移动平均值低于下限或高于上限时发送飞书告警。</div>
+                <div class="legend redemption-ma-summary">{"".join(latest_items)}</div>
+                <div class="threshold-dual-inputs">
+                    <label class="threshold-input-group">
+                        <span>低于阈值（%）</span>
+                        <input name="floor_threshold" type="number" step="0.1" value="{floor_rule.threshold}" required />
+                    </label>
+                    <label class="threshold-input-group">
+                        <span>高于阈值（%）</span>
+                        <input name="ceiling_threshold" type="number" step="0.1" value="{ceiling_rule.threshold}" required />
+                    </label>
+                    <button type="submit">保存 MA 阈值</button>
+                </div>
+            </form>
+            '''
 
 
 def _render_charts(session: Session, hours: int) -> str:
@@ -1572,6 +1660,15 @@ def logout():
         return response
 
 
+def _upsert_rule_override(session: Session, rule_id: str, threshold: float) -> None:
+    override = session.exec(select(AlertRuleOverride).where(AlertRuleOverride.rule_id == rule_id)).first()
+    if override is None:
+        session.add(AlertRuleOverride(rule_id=rule_id, threshold=threshold, updated_at=utc_now()))
+    else:
+        override.threshold = threshold
+        override.updated_at = utc_now()
+
+
 @router.post("/dashboard/thresholds")
 def update_threshold(
     request: Request,
@@ -1585,12 +1682,29 @@ def update_threshold(
     if rule_id not in THRESHOLD_RULE_IDS or rule_id not in rule_map:
         return RedirectResponse(url=f"/dashboard?hours={hours}", status_code=303)
 
-    override = session.exec(select(AlertRuleOverride).where(AlertRuleOverride.rule_id == rule_id)).first()
-    if override is None:
-        session.add(AlertRuleOverride(rule_id=rule_id, threshold=threshold, updated_at=utc_now()))
-    else:
-        override.threshold = threshold
-        override.updated_at = utc_now()
+    _upsert_rule_override(session, rule_id, threshold)
+    session.commit()
+    return RedirectResponse(url=f"/dashboard?hours={hours}&threshold_updated=1", status_code=303)
+
+
+@router.post("/dashboard/redemption-ma-thresholds")
+def update_redemption_ma_thresholds(
+    request: Request,
+    floor_threshold: float = Form(...),
+    ceiling_threshold: float = Form(...),
+    hours: int = Form(default=24),
+    session: Session = Depends(get_session),
+):
+    _require_dashboard_auth(request)
+    rule_map = _effective_rule_map(session)
+    editable_rule_ids = (*REDEMPTION_MA_FLOOR_RULE_IDS, *REDEMPTION_MA_CEILING_RULE_IDS)
+    if any(rule_id not in rule_map for rule_id in editable_rule_ids):
+        return RedirectResponse(url=f"/dashboard?hours={hours}", status_code=303)
+
+    for rule_id in REDEMPTION_MA_FLOOR_RULE_IDS:
+        _upsert_rule_override(session, rule_id, floor_threshold)
+    for rule_id in REDEMPTION_MA_CEILING_RULE_IDS:
+        _upsert_rule_override(session, rule_id, ceiling_threshold)
     session.commit()
     return RedirectResponse(url=f"/dashboard?hours={hours}&threshold_updated=1", status_code=303)
 
@@ -1657,6 +1771,10 @@ def dashboard(
     .card .label {{ color: var(--muted); font-size: 13px; margin-bottom: 8px; }}
     .card .value {{ font-size: 28px; font-weight: 700; margin-bottom: 4px; }}
     .card .meta {{ color: var(--muted); font-size: 12px; }}
+    .ma-card-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 10px 0; }}
+    .ma-card-grid div {{ min-width: 0; }}
+    .ma-card-grid span {{ display: block; color: var(--muted); font-size: 12px; }}
+    .ma-card-grid strong {{ display: block; margin-top: 3px; font-size: 18px; }}
     .card .delta {{ color: #cbd5e1; font-size: 12px; margin-bottom: 6px; }}
     .yield-pair {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 8px 0; }}
     .yield-stat {{ min-width: 0; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(148,163,184,0.12); background: rgba(15,23,42,0.48); }}
@@ -1678,6 +1796,8 @@ def dashboard(
     .threshold-stats strong {{ font-size: 16px; }}
     .threshold-input-group {{ display: flex; flex-direction: column; gap: 8px; color: var(--muted); font-size: 12px; }}
     .threshold-input-group input {{ width: 100%; }}
+    .redemption-threshold-card {{ margin-bottom: 14px; }}
+    .threshold-dual-inputs {{ display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)) auto; gap: 12px; align-items: end; }}
     .flash {{ margin-bottom: 14px; padding: 10px 12px; border-radius: 12px; font-size: 13px; }}
     .flash.success {{ background: rgba(52, 211, 153, 0.12); border: 1px solid rgba(52, 211, 153, 0.28); color: #a7f3d0; }}
     .panel-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }}
@@ -1753,6 +1873,7 @@ def dashboard(
     @media (max-width: 960px) {{
       .grid {{ grid-template-columns: 1fr; }}
             .threshold-grid {{ grid-template-columns: 1fr; }}
+            .threshold-dual-inputs {{ grid-template-columns: 1fr; }}
             .morpho-market-row {{ grid-template-columns: 1fr; }}
       .header {{ flex-direction: column; align-items: flex-start; }}
       .panel-head {{ flex-direction: column; }}

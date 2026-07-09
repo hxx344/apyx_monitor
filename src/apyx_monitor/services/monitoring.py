@@ -26,6 +26,14 @@ from .rule_engine import NotificationMessage, RuleEngine, RuleEvaluationResult
 
 logger = logging.getLogger(__name__)
 
+REDEMPTION_SPREAD_PCT_METRIC = "price_vs_redemption_spread_pct"
+REDEMPTION_MA_WINDOWS = {
+    "price_vs_redemption_spread_pct_ma_12h": 12,
+    "price_vs_redemption_spread_pct_ma_24h": 24,
+    "price_vs_redemption_spread_pct_ma_72h": 72,
+    "price_vs_redemption_spread_pct_ma_7d": 24 * 7,
+}
+
 
 class MonitoringService:
     def __init__(self) -> None:
@@ -214,6 +222,7 @@ class MonitoringService:
                 return RuleEvaluationResult(events=[], notifications=[])
 
             all_points = self._with_apxusd_redemption_spread(session, all_points)
+            all_points = self._with_apxusd_redemption_moving_averages(session, all_points)
             for point in all_points:
                 session.add(
                     MetricSnapshot(
@@ -329,7 +338,7 @@ class MonitoringService:
                 MetricPoint(
                     entity_id=APXUSD_MARKET_ENTITY_ID,
                     entity_type="market_price",
-                    metric_name="price_vs_redemption_spread_pct",
+                    metric_name=REDEMPTION_SPREAD_PCT_METRIC,
                     value=spread / redemption_point.value * 100,
                     unit="pct",
                     source="derived",
@@ -347,6 +356,64 @@ class MonitoringService:
             *points,
             *derived_points,
         ]
+
+    @staticmethod
+    def _with_apxusd_redemption_moving_averages(
+        session: Session,
+        points: list[MetricPoint],
+    ) -> list[MetricPoint]:
+        spread_pct_point = MonitoringService._latest_point_for_metric(
+            points,
+            APXUSD_MARKET_ENTITY_ID,
+            REDEMPTION_SPREAD_PCT_METRIC,
+        )
+        if spread_pct_point is None:
+            return points
+
+        recorded_at = MonitoringService._as_utc(spread_pct_point.recorded_at)
+        max_window_hours = max(REDEMPTION_MA_WINDOWS.values())
+        cutoff_at = recorded_at - timedelta(hours=max_window_hours)
+        historical_rows = session.exec(
+            select(MetricSnapshot)
+            .where(MetricSnapshot.entity_id == APXUSD_MARKET_ENTITY_ID)
+            .where(MetricSnapshot.metric_name == REDEMPTION_SPREAD_PCT_METRIC)
+            .where(MetricSnapshot.recorded_at >= cutoff_at)
+            .order_by(MetricSnapshot.recorded_at.asc(), MetricSnapshot.id.asc())
+        ).all()
+        samples = [
+            (MonitoringService._as_utc(row.recorded_at), row.value)
+            for row in historical_rows
+        ]
+        samples.append((recorded_at, spread_pct_point.value))
+
+        derived_points: list[MetricPoint] = []
+        for metric_name, window_hours in REDEMPTION_MA_WINDOWS.items():
+            window_cutoff_at = recorded_at - timedelta(hours=window_hours)
+            window_values = [
+                value
+                for sample_at, value in samples
+                if window_cutoff_at <= sample_at <= recorded_at
+            ]
+            if not window_values:
+                continue
+            derived_points.append(
+                MetricPoint(
+                    entity_id=APXUSD_MARKET_ENTITY_ID,
+                    entity_type="market_price",
+                    metric_name=metric_name,
+                    value=sum(window_values) / len(window_values),
+                    unit="pct",
+                    source="derived",
+                    recorded_at=recorded_at,
+                    details={
+                        "base_metric_name": REDEMPTION_SPREAD_PCT_METRIC,
+                        "window_hours": window_hours,
+                        "sample_count": len(window_values),
+                    },
+                )
+            )
+
+        return [*points, *derived_points]
 
     @staticmethod
     def _latest_point_for_metric(

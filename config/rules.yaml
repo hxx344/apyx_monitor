@@ -100,6 +100,102 @@ rules:
     notify_feishu: true
     enabled: true
 
+  - rule_id: apxusd_redemption_spread_pct_ma_12h_floor
+    description: APXUSD Redemption spread 12h MA below threshold
+    entity_id: apxusd-market
+    metric_name: price_vs_redemption_spread_pct_ma_12h
+    comparator: lt
+    threshold: -2.0
+    severity: P1
+    cooldown_seconds: 600
+    required_consecutive_hits: 1
+    notify_feishu: true
+    enabled: true
+
+  - rule_id: apxusd_redemption_spread_pct_ma_24h_floor
+    description: APXUSD Redemption spread 24h MA below threshold
+    entity_id: apxusd-market
+    metric_name: price_vs_redemption_spread_pct_ma_24h
+    comparator: lt
+    threshold: -2.0
+    severity: P1
+    cooldown_seconds: 600
+    required_consecutive_hits: 1
+    notify_feishu: true
+    enabled: true
+
+  - rule_id: apxusd_redemption_spread_pct_ma_72h_floor
+    description: APXUSD Redemption spread 72h MA below threshold
+    entity_id: apxusd-market
+    metric_name: price_vs_redemption_spread_pct_ma_72h
+    comparator: lt
+    threshold: -2.0
+    severity: P1
+    cooldown_seconds: 600
+    required_consecutive_hits: 1
+    notify_feishu: true
+    enabled: true
+
+  - rule_id: apxusd_redemption_spread_pct_ma_7d_floor
+    description: APXUSD Redemption spread 7d MA below threshold
+    entity_id: apxusd-market
+    metric_name: price_vs_redemption_spread_pct_ma_7d
+    comparator: lt
+    threshold: -2.0
+    severity: P1
+    cooldown_seconds: 600
+    required_consecutive_hits: 1
+    notify_feishu: true
+    enabled: true
+
+  - rule_id: apxusd_redemption_spread_pct_ma_12h_ceiling
+    description: APXUSD Redemption spread 12h MA above threshold
+    entity_id: apxusd-market
+    metric_name: price_vs_redemption_spread_pct_ma_12h
+    comparator: gt
+    threshold: 2.0
+    severity: P1
+    cooldown_seconds: 600
+    required_consecutive_hits: 1
+    notify_feishu: true
+    enabled: true
+
+  - rule_id: apxusd_redemption_spread_pct_ma_24h_ceiling
+    description: APXUSD Redemption spread 24h MA above threshold
+    entity_id: apxusd-market
+    metric_name: price_vs_redemption_spread_pct_ma_24h
+    comparator: gt
+    threshold: 2.0
+    severity: P1
+    cooldown_seconds: 600
+    required_consecutive_hits: 1
+    notify_feishu: true
+    enabled: true
+
+  - rule_id: apxusd_redemption_spread_pct_ma_72h_ceiling
+    description: APXUSD Redemption spread 72h MA above threshold
+    entity_id: apxusd-market
+    metric_name: price_vs_redemption_spread_pct_ma_72h
+    comparator: gt
+    threshold: 2.0
+    severity: P1
+    cooldown_seconds: 600
+    required_consecutive_hits: 1
+    notify_feishu: true
+    enabled: true
+
+  - rule_id: apxusd_redemption_spread_pct_ma_7d_ceiling
+    description: APXUSD Redemption spread 7d MA above threshold
+    entity_id: apxusd-market
+    metric_name: price_vs_redemption_spread_pct_ma_7d
+    comparator: gt
+    threshold: 2.0
+    severity: P1
+    cooldown_seconds: 600
+    required_consecutive_hits: 1
+    notify_feishu: true
+    enabled: true
+
   - rule_id: eth_cd2a_336555_approval_detected
     description: 监控地址在 Ethereum 上 approve 目标代币
     entity_id: eth-approval-cd2a-336555
