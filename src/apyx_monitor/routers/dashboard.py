@@ -93,18 +93,8 @@ REDEMPTION_MA_WINDOWS = (
     ("72h MA", "price_vs_redemption_spread_pct_ma_72h", 72, "#22c55e"),
     ("7d MA", "price_vs_redemption_spread_pct_ma_7d", 24 * 7, "#ef4444"),
 )
-REDEMPTION_MA_FLOOR_RULE_IDS = (
-    "apxusd_redemption_spread_pct_ma_12h_floor",
-    "apxusd_redemption_spread_pct_ma_24h_floor",
-    "apxusd_redemption_spread_pct_ma_72h_floor",
-    "apxusd_redemption_spread_pct_ma_7d_floor",
-)
-REDEMPTION_MA_CEILING_RULE_IDS = (
-    "apxusd_redemption_spread_pct_ma_12h_ceiling",
-    "apxusd_redemption_spread_pct_ma_24h_ceiling",
-    "apxusd_redemption_spread_pct_ma_72h_ceiling",
-    "apxusd_redemption_spread_pct_ma_7d_ceiling",
-)
+REDEMPTION_PCT_FLOOR_RULE_ID = "apxusd_redemption_spread_pct_floor"
+REDEMPTION_PCT_CEILING_RULE_ID = "apxusd_redemption_spread_pct_ceiling"
 
 CHART_DEFS = [
     {
@@ -998,12 +988,12 @@ def _render_threshold_controls(
                         '''
                 )
 
-        redemption_ma_controls = _render_redemption_ma_threshold_controls(rule_map, latest_map, hours)
+        redemption_pct_controls = _render_redemption_pct_threshold_controls(rule_map, latest_map, hours)
 
-        if not rows and not redemption_ma_controls:
+        if not rows and not redemption_pct_controls:
                 return ""
 
-        banner = '<div class="flash success">告警阈值已更新，后续采集会按新阈值触发；闭环套利和 Redemption MA 规则会发送飞书。</div>' if threshold_updated else ""
+        banner = '<div class="flash success">告警阈值已更新，后续采集会按新阈值触发；闭环套利和 Redemption 当前百分比规则会发送飞书。</div>' if threshold_updated else ""
         return f'''
         <div class="panel full threshold-panel">
             <div class="panel-head">
@@ -1013,23 +1003,27 @@ def _render_threshold_controls(
                 </div>
             </div>
             {banner}
-            {redemption_ma_controls}
+            {redemption_pct_controls}
             <div class="threshold-grid">{"".join(rows)}</div>
         </div>
         '''
 
 
-def _render_redemption_ma_threshold_controls(
+def _render_redemption_pct_threshold_controls(
     rule_map: dict[str, RuleDefinition],
     latest_map: dict[tuple[str, str], MetricSnapshot],
     hours: int,
 ) -> str:
-    floor_rule = rule_map.get(REDEMPTION_MA_FLOOR_RULE_IDS[0])
-    ceiling_rule = rule_map.get(REDEMPTION_MA_CEILING_RULE_IDS[0])
+    floor_rule = rule_map.get(REDEMPTION_PCT_FLOOR_RULE_ID)
+    ceiling_rule = rule_map.get(REDEMPTION_PCT_CEILING_RULE_ID)
     if floor_rule is None or ceiling_rule is None:
         return ""
 
+    current_metric = latest_map.get((APXUSD_MARKET_ENTITY_ID, REDEMPTION_SPREAD_PCT_METRIC))
     latest_items = []
+    latest_items.append(
+        f'<span class="legend-item">当前: {escape(_format_value(REDEMPTION_SPREAD_PCT_METRIC, current_metric.value if current_metric else None))}</span>'
+    )
     for label, metric_name, _, _ in REDEMPTION_MA_WINDOWS:
         metric = latest_map.get((APXUSD_MARKET_ENTITY_ID, metric_name))
         latest_items.append(
@@ -1037,10 +1031,10 @@ def _render_redemption_ma_threshold_controls(
         )
 
     return f'''
-            <form class="threshold-card redemption-threshold-card" method="post" action="/dashboard/redemption-ma-thresholds">
+            <form class="threshold-card redemption-threshold-card" method="post" action="/dashboard/redemption-pct-thresholds">
                 <input type="hidden" name="hours" value="{hours}" />
-                <div class="threshold-title">Redemption MA 飞书告警</div>
-                <div class="threshold-meta">当 12h / 24h / 72h / 7d 任一移动平均值低于下限或高于上限时发送飞书告警。</div>
+                <div class="threshold-title">Redemption 当前百分比飞书告警</div>
+                <div class="threshold-meta">仅当当前 APXUSD price - Redemption Value 百分比低于下限或高于上限时发送飞书告警；移动平均值只用于展示。</div>
                 <div class="legend redemption-ma-summary">{"".join(latest_items)}</div>
                 <div class="threshold-dual-inputs">
                     <label class="threshold-input-group">
@@ -1687,8 +1681,8 @@ def update_threshold(
     return RedirectResponse(url=f"/dashboard?hours={hours}&threshold_updated=1", status_code=303)
 
 
-@router.post("/dashboard/redemption-ma-thresholds")
-def update_redemption_ma_thresholds(
+@router.post("/dashboard/redemption-pct-thresholds")
+def update_redemption_pct_thresholds(
     request: Request,
     floor_threshold: float = Form(...),
     ceiling_threshold: float = Form(...),
@@ -1697,14 +1691,12 @@ def update_redemption_ma_thresholds(
 ):
     _require_dashboard_auth(request)
     rule_map = _effective_rule_map(session)
-    editable_rule_ids = (*REDEMPTION_MA_FLOOR_RULE_IDS, *REDEMPTION_MA_CEILING_RULE_IDS)
+    editable_rule_ids = (REDEMPTION_PCT_FLOOR_RULE_ID, REDEMPTION_PCT_CEILING_RULE_ID)
     if any(rule_id not in rule_map for rule_id in editable_rule_ids):
         return RedirectResponse(url=f"/dashboard?hours={hours}", status_code=303)
 
-    for rule_id in REDEMPTION_MA_FLOOR_RULE_IDS:
-        _upsert_rule_override(session, rule_id, floor_threshold)
-    for rule_id in REDEMPTION_MA_CEILING_RULE_IDS:
-        _upsert_rule_override(session, rule_id, ceiling_threshold)
+    _upsert_rule_override(session, REDEMPTION_PCT_FLOOR_RULE_ID, floor_threshold)
+    _upsert_rule_override(session, REDEMPTION_PCT_CEILING_RULE_ID, ceiling_threshold)
     session.commit()
     return RedirectResponse(url=f"/dashboard?hours={hours}&threshold_updated=1", status_code=303)
 
