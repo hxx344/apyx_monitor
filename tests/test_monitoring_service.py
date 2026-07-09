@@ -5,7 +5,12 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from apyx_monitor.collectors.accountable import APXUSD_REDEMPTION_ENTITY_ID, REDEMPTION_VALUE_METRIC
-from apyx_monitor.collectors.arbitrage import APXUSD_MARKET_ENTITY_ID, APXUSD_PRICE_METRIC
+from apyx_monitor.collectors.arbitrage import (
+    APXUSD_BUY_PRICE_METRIC,
+    APXUSD_MARKET_ENTITY_ID,
+    APXUSD_PRICE_METRIC,
+    APXUSD_SELL_PRICE_METRIC,
+)
 from apyx_monitor.collectors.base import MetricPoint
 from apyx_monitor.services.monitoring import MonitoringService
 from apyx_monitor.services.rule_engine import RuleEvaluationResult
@@ -78,6 +83,50 @@ def test_apxusd_redemption_spread_is_derived_from_collected_points():
     assert round(spread.value, 10) == 0.03
     assert spread_pct.entity_id == APXUSD_MARKET_ENTITY_ID
     assert round(spread_pct.value, 10) == round(0.03 / 0.79 * 100, 10)
+
+
+def test_apxusd_redemption_spread_uses_directional_buy_and_sell_prices():
+    recorded_at = datetime.now(timezone.utc)
+    points = [
+        MetricPoint(
+            entity_id=APXUSD_MARKET_ENTITY_ID,
+            entity_type="market_price",
+            metric_name=APXUSD_BUY_PRICE_METRIC,
+            value=0.78,
+            unit="usd",
+            source="test",
+            recorded_at=recorded_at,
+        ),
+        MetricPoint(
+            entity_id=APXUSD_MARKET_ENTITY_ID,
+            entity_type="market_price",
+            metric_name=APXUSD_SELL_PRICE_METRIC,
+            value=0.82,
+            unit="usd",
+            source="test",
+            recorded_at=recorded_at,
+        ),
+        MetricPoint(
+            entity_id=APXUSD_REDEMPTION_ENTITY_ID,
+            entity_type="proof_of_solvency",
+            metric_name=REDEMPTION_VALUE_METRIC,
+            value=0.80,
+            unit="usd",
+            source="test",
+            recorded_at=recorded_at,
+        ),
+    ]
+
+    enriched = MonitoringService._with_apxusd_redemption_spread(None, points)
+    buy_spread_pct = next(
+        point for point in enriched if point.metric_name == "buy_price_vs_redemption_spread_pct"
+    )
+    sell_spread_pct = next(
+        point for point in enriched if point.metric_name == "sell_price_vs_redemption_spread_pct"
+    )
+
+    assert round(buy_spread_pct.value, 10) == -2.5
+    assert round(sell_spread_pct.value, 10) == 2.5
 
 
 def test_apxusd_redemption_spread_moving_averages_are_derived():

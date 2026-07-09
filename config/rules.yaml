@@ -101,9 +101,9 @@ rules:
     enabled: true
 
   - rule_id: apxusd_redemption_spread_pct_floor
-    description: APXUSD Redemption spread percent below threshold
+    description: APXUSD USDC buy price redemption spread percent below threshold
     entity_id: apxusd-market
-    metric_name: price_vs_redemption_spread_pct
+    metric_name: buy_price_vs_redemption_spread_pct
     comparator: lt
     threshold: -2.0
     severity: P1
@@ -113,9 +113,9 @@ rules:
     enabled: true
 
   - rule_id: apxusd_redemption_spread_pct_ceiling
-    description: APXUSD Redemption spread percent above threshold
+    description: APXUSD sell-to-USDC price redemption spread percent above threshold
     entity_id: apxusd-market
-    metric_name: price_vs_redemption_spread_pct
+    metric_name: sell_price_vs_redemption_spread_pct
     comparator: gt
     threshold: 2.0
     severity: P1

@@ -18,7 +18,12 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from ..collectors.accountable import APXUSD_REDEMPTION_ENTITY_ID, REDEMPTION_VALUE_METRIC
-from ..collectors.arbitrage import APXUSD_MARKET_ENTITY_ID, APXUSD_PRICE_METRIC
+from ..collectors.arbitrage import (
+    APXUSD_BUY_PRICE_METRIC,
+    APXUSD_MARKET_ENTITY_ID,
+    APXUSD_PRICE_METRIC,
+    APXUSD_SELL_PRICE_METRIC,
+)
 from ..collectors.finnhub_stock import FINNHUB_STOCK_ENTITY_ID
 from ..config import RuleDefinition, Settings, get_asset_catalog, get_rule_catalog, get_settings
 from ..db import get_session
@@ -66,7 +71,13 @@ CARD_DEFS = [
         "metric_name": "best_apxusd_loop_final",
         "label": "10,000 apxUSD 闭环后",
     },
-    {"entity_id": APXUSD_MARKET_ENTITY_ID, "metric_name": APXUSD_PRICE_METRIC, "label": "APXUSD price"},
+    {
+        "entity_id": APXUSD_MARKET_ENTITY_ID,
+        "metric_name": APXUSD_BUY_PRICE_METRIC,
+        "secondary_metric_name": APXUSD_SELL_PRICE_METRIC,
+        "secondary_label": "卖出价",
+        "label": "APXUSD price",
+    },
     {
         "entity_id": APXUSD_REDEMPTION_ENTITY_ID,
         "metric_name": REDEMPTION_VALUE_METRIC,
@@ -87,6 +98,8 @@ ARBITRAGE_MONITORS = [
 ]
 ARBITRAGE_STRATEGY_IDS = ("buy-source-sell-target", "buy-target-sell-source")
 REDEMPTION_SPREAD_PCT_METRIC = "price_vs_redemption_spread_pct"
+REDEMPTION_BUY_SPREAD_PCT_METRIC = "buy_price_vs_redemption_spread_pct"
+REDEMPTION_SELL_SPREAD_PCT_METRIC = "sell_price_vs_redemption_spread_pct"
 REDEMPTION_MA_WINDOWS = (
     ("12h MA", "price_vs_redemption_spread_pct_ma_12h", 12, "#f59e0b"),
     ("24h MA", "price_vs_redemption_spread_pct_ma_24h", 24, "#a78bfa"),
@@ -158,9 +171,15 @@ CHART_DEFS.extend(
             "series": [
                 {
                     "entity_id": APXUSD_MARKET_ENTITY_ID,
-                    "metric_name": APXUSD_PRICE_METRIC,
-                    "label": "APXUSD price",
+                    "metric_name": APXUSD_BUY_PRICE_METRIC,
+                    "label": "USDC buy APXUSD",
                     "color": "#38bdf8",
+                },
+                {
+                    "entity_id": APXUSD_MARKET_ENTITY_ID,
+                    "metric_name": APXUSD_SELL_PRICE_METRIC,
+                    "label": "APXUSD sell USDC",
+                    "color": "#f97316",
                 },
                 {
                     "entity_id": APXUSD_REDEMPTION_ENTITY_ID,
@@ -176,8 +195,14 @@ CHART_DEFS.extend(
                 {
                     "entity_id": APXUSD_MARKET_ENTITY_ID,
                     "metric_name": "price_vs_redemption_spread_usd",
-                    "label": "Spread",
+                    "label": "Buy Spread",
                     "color": "#f97316",
+                },
+                {
+                    "entity_id": APXUSD_MARKET_ENTITY_ID,
+                    "metric_name": "sell_price_vs_redemption_spread_usd",
+                    "label": "Sell Spread",
+                    "color": "#38bdf8",
                 },
             ],
         },
@@ -1019,10 +1044,14 @@ def _render_redemption_pct_threshold_controls(
     if floor_rule is None or ceiling_rule is None:
         return ""
 
-    current_metric = latest_map.get((APXUSD_MARKET_ENTITY_ID, REDEMPTION_SPREAD_PCT_METRIC))
+    buy_metric = latest_map.get((APXUSD_MARKET_ENTITY_ID, REDEMPTION_BUY_SPREAD_PCT_METRIC))
+    sell_metric = latest_map.get((APXUSD_MARKET_ENTITY_ID, REDEMPTION_SELL_SPREAD_PCT_METRIC))
     latest_items = []
     latest_items.append(
-        f'<span class="legend-item">当前: {escape(_format_value(REDEMPTION_SPREAD_PCT_METRIC, current_metric.value if current_metric else None))}</span>'
+        f'<span class="legend-item">买入偏离: {escape(_format_value(REDEMPTION_BUY_SPREAD_PCT_METRIC, buy_metric.value if buy_metric else None))}</span>'
+    )
+    latest_items.append(
+        f'<span class="legend-item">卖出偏离: {escape(_format_value(REDEMPTION_SELL_SPREAD_PCT_METRIC, sell_metric.value if sell_metric else None))}</span>'
     )
     for label, metric_name, _, _ in REDEMPTION_MA_WINDOWS:
         metric = latest_map.get((APXUSD_MARKET_ENTITY_ID, metric_name))
@@ -1034,15 +1063,15 @@ def _render_redemption_pct_threshold_controls(
             <form class="threshold-card redemption-threshold-card" method="post" action="/dashboard/redemption-pct-thresholds">
                 <input type="hidden" name="hours" value="{hours}" />
                 <div class="threshold-title">Redemption 当前百分比飞书告警</div>
-                <div class="threshold-meta">仅当当前 APXUSD price - Redemption Value 百分比低于下限或高于上限时发送飞书告警；移动平均值只用于展示。</div>
+                <div class="threshold-meta">低于阈值使用 USDC 买入 APXUSD 的偏离百分比；高于阈值使用 APXUSD 卖成 USDC 的偏离百分比。移动平均值只用于展示。</div>
                 <div class="legend redemption-ma-summary">{"".join(latest_items)}</div>
                 <div class="threshold-dual-inputs">
                     <label class="threshold-input-group">
-                        <span>低于阈值（%）</span>
+                        <span>买入偏离低于阈值（%）</span>
                         <input name="floor_threshold" type="number" step="0.1" value="{floor_rule.threshold}" required />
                     </label>
                     <label class="threshold-input-group">
-                        <span>高于阈值（%）</span>
+                        <span>卖出偏离高于阈值（%）</span>
                         <input name="ceiling_threshold" type="number" step="0.1" value="{ceiling_rule.threshold}" required />
                     </label>
                     <button type="submit">保存 MA 阈值</button>

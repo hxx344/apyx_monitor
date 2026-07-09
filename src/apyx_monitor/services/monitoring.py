@@ -16,7 +16,12 @@ from ..collectors import (
     OnChainCollector,
 )
 from ..collectors.accountable import APXUSD_REDEMPTION_ENTITY_ID, REDEMPTION_VALUE_METRIC
-from ..collectors.arbitrage import APXUSD_MARKET_ENTITY_ID, APXUSD_PRICE_METRIC
+from ..collectors.arbitrage import (
+    APXUSD_BUY_PRICE_METRIC,
+    APXUSD_MARKET_ENTITY_ID,
+    APXUSD_PRICE_METRIC,
+    APXUSD_SELL_PRICE_METRIC,
+)
 from ..collectors.base import BaseCollector, MetricPoint
 from ..config import get_asset_catalog, get_rule_catalog, get_settings
 from ..db import engine
@@ -27,6 +32,8 @@ from .rule_engine import NotificationMessage, RuleEngine, RuleEvaluationResult
 logger = logging.getLogger(__name__)
 
 REDEMPTION_SPREAD_PCT_METRIC = "price_vs_redemption_spread_pct"
+REDEMPTION_BUY_SPREAD_PCT_METRIC = "buy_price_vs_redemption_spread_pct"
+REDEMPTION_SELL_SPREAD_PCT_METRIC = "sell_price_vs_redemption_spread_pct"
 REDEMPTION_MA_WINDOWS = {
     "price_vs_redemption_spread_pct_ma_12h": 12,
     "price_vs_redemption_spread_pct_ma_24h": 24,
@@ -283,24 +290,50 @@ class MonitoringService:
         session: Session,
         points: list[MetricPoint],
     ) -> list[MetricPoint]:
-        price_point = MonitoringService._latest_point_for_metric(
+        legacy_price_point = MonitoringService._latest_point_for_metric(
             points,
             APXUSD_MARKET_ENTITY_ID,
             APXUSD_PRICE_METRIC,
+        )
+        buy_price_point = MonitoringService._latest_point_for_metric(
+            points,
+            APXUSD_MARKET_ENTITY_ID,
+            APXUSD_BUY_PRICE_METRIC,
+        ) or legacy_price_point
+        sell_price_point = MonitoringService._latest_point_for_metric(
+            points,
+            APXUSD_MARKET_ENTITY_ID,
+            APXUSD_SELL_PRICE_METRIC,
         )
         redemption_point = MonitoringService._latest_point_for_metric(
             points,
             APXUSD_REDEMPTION_ENTITY_ID,
             REDEMPTION_VALUE_METRIC,
         )
-        if price_point is None:
-            price_snapshot = MonitoringService._latest_snapshot(
+        if buy_price_point is None and session is not None:
+            buy_price_snapshot = MonitoringService._latest_snapshot(
+                session,
+                APXUSD_MARKET_ENTITY_ID,
+                APXUSD_BUY_PRICE_METRIC,
+            )
+            if buy_price_snapshot is not None:
+                buy_price_point = MonitoringService._point_from_snapshot(buy_price_snapshot)
+        if buy_price_point is None and session is not None:
+            legacy_price_snapshot = MonitoringService._latest_snapshot(
                 session,
                 APXUSD_MARKET_ENTITY_ID,
                 APXUSD_PRICE_METRIC,
             )
-            if price_snapshot is not None:
-                price_point = MonitoringService._point_from_snapshot(price_snapshot)
+            if legacy_price_snapshot is not None:
+                buy_price_point = MonitoringService._point_from_snapshot(legacy_price_snapshot)
+        if sell_price_point is None and session is not None:
+            sell_price_snapshot = MonitoringService._latest_snapshot(
+                session,
+                APXUSD_MARKET_ENTITY_ID,
+                APXUSD_SELL_PRICE_METRIC,
+            )
+            if sell_price_snapshot is not None:
+                sell_price_point = MonitoringService._point_from_snapshot(sell_price_snapshot)
         if redemption_point is None:
             redemption_snapshot = MonitoringService._latest_snapshot(
                 session,
@@ -309,13 +342,13 @@ class MonitoringService:
             )
             if redemption_snapshot is not None:
                 redemption_point = MonitoringService._point_from_snapshot(redemption_snapshot)
-        if price_point is None or redemption_point is None:
+        if buy_price_point is None or redemption_point is None:
             return points
 
-        price_recorded_at = MonitoringService._as_utc(price_point.recorded_at)
+        buy_price_recorded_at = MonitoringService._as_utc(buy_price_point.recorded_at)
         redemption_recorded_at = MonitoringService._as_utc(redemption_point.recorded_at)
-        recorded_at = max(price_recorded_at, redemption_recorded_at)
-        spread = price_point.value - redemption_point.value
+        recorded_at = max(buy_price_recorded_at, redemption_recorded_at)
+        spread = buy_price_point.value - redemption_point.value
         derived_points = [
             MetricPoint(
                 entity_id=APXUSD_MARKET_ENTITY_ID,
@@ -326,9 +359,25 @@ class MonitoringService:
                 source="derived",
                 recorded_at=recorded_at,
                 details={
-                    "price_usd": price_point.value,
+                    "price_usd": buy_price_point.value,
+                    "price_side": "buy",
                     "redemption_value_usd": redemption_point.value,
-                    "price_recorded_at": price_recorded_at.isoformat(),
+                    "price_recorded_at": buy_price_recorded_at.isoformat(),
+                    "redemption_recorded_at": redemption_recorded_at.isoformat(),
+                },
+            ),
+            MetricPoint(
+                entity_id=APXUSD_MARKET_ENTITY_ID,
+                entity_type="market_price",
+                metric_name="buy_price_vs_redemption_spread_usd",
+                value=spread,
+                unit="usd",
+                source="derived",
+                recorded_at=recorded_at,
+                details={
+                    "buy_price_usd": buy_price_point.value,
+                    "redemption_value_usd": redemption_point.value,
+                    "buy_price_recorded_at": buy_price_recorded_at.isoformat(),
                     "redemption_recorded_at": redemption_recorded_at.isoformat(),
                 },
             ),
@@ -344,14 +393,73 @@ class MonitoringService:
                     source="derived",
                     recorded_at=recorded_at,
                     details={
-                        "price_usd": price_point.value,
+                        "price_usd": buy_price_point.value,
+                        "price_side": "buy",
                         "redemption_value_usd": redemption_point.value,
                         "spread_usd": spread,
-                        "price_recorded_at": price_recorded_at.isoformat(),
+                        "price_recorded_at": buy_price_recorded_at.isoformat(),
                         "redemption_recorded_at": redemption_recorded_at.isoformat(),
                     },
                 )
             )
+            derived_points.append(
+                MetricPoint(
+                    entity_id=APXUSD_MARKET_ENTITY_ID,
+                    entity_type="market_price",
+                    metric_name=REDEMPTION_BUY_SPREAD_PCT_METRIC,
+                    value=spread / redemption_point.value * 100,
+                    unit="pct",
+                    source="derived",
+                    recorded_at=recorded_at,
+                    details={
+                        "buy_price_usd": buy_price_point.value,
+                        "redemption_value_usd": redemption_point.value,
+                        "spread_usd": spread,
+                        "buy_price_recorded_at": buy_price_recorded_at.isoformat(),
+                        "redemption_recorded_at": redemption_recorded_at.isoformat(),
+                    },
+                )
+            )
+        if sell_price_point is not None:
+            sell_price_recorded_at = MonitoringService._as_utc(sell_price_point.recorded_at)
+            sell_recorded_at = max(sell_price_recorded_at, redemption_recorded_at)
+            sell_spread = sell_price_point.value - redemption_point.value
+            derived_points.append(
+                MetricPoint(
+                    entity_id=APXUSD_MARKET_ENTITY_ID,
+                    entity_type="market_price",
+                    metric_name="sell_price_vs_redemption_spread_usd",
+                    value=sell_spread,
+                    unit="usd",
+                    source="derived",
+                    recorded_at=sell_recorded_at,
+                    details={
+                        "sell_price_usd": sell_price_point.value,
+                        "redemption_value_usd": redemption_point.value,
+                        "sell_price_recorded_at": sell_price_recorded_at.isoformat(),
+                        "redemption_recorded_at": redemption_recorded_at.isoformat(),
+                    },
+                )
+            )
+            if redemption_point.value:
+                derived_points.append(
+                    MetricPoint(
+                        entity_id=APXUSD_MARKET_ENTITY_ID,
+                        entity_type="market_price",
+                        metric_name=REDEMPTION_SELL_SPREAD_PCT_METRIC,
+                        value=sell_spread / redemption_point.value * 100,
+                        unit="pct",
+                        source="derived",
+                        recorded_at=sell_recorded_at,
+                        details={
+                            "sell_price_usd": sell_price_point.value,
+                            "redemption_value_usd": redemption_point.value,
+                            "spread_usd": sell_spread,
+                            "sell_price_recorded_at": sell_price_recorded_at.isoformat(),
+                            "redemption_recorded_at": redemption_recorded_at.isoformat(),
+                        },
+                    )
+                )
         return [
             *points,
             *derived_points,

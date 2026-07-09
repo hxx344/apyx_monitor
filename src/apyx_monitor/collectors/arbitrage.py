@@ -22,6 +22,8 @@ VELORA_PRICE_URL = "https://api.paraswap.io/prices"
 ARBITRAGE_ENTITY_ID = "arb-apyusd-apxusd-crosschain"
 APXUSD_MARKET_ENTITY_ID = "apxusd-market"
 APXUSD_PRICE_METRIC = "price_usd"
+APXUSD_BUY_PRICE_METRIC = "buy_price_usd"
+APXUSD_SELL_PRICE_METRIC = "sell_price_usd"
 BUY_SOURCE_SELL_TARGET = "buy-source-sell-target"
 BUY_TARGET_SELL_SOURCE = "buy-target-sell-source"
 QUOTE_THROTTLE_SECONDS = 4.0
@@ -1765,12 +1767,36 @@ class ArbitrageCollector(BaseCollector):
         for sample in samples:
             details = self._sample_details(sample)
             if sample.entry_apxusd_amount > 0 and sample.start_amount > 0:
+                buy_price = float(sample.start_amount / sample.entry_apxusd_amount)
+                price_details = {
+                    "sample_entity_id": sample.entity_id,
+                    "monitor_id": sample.monitor.monitor_id,
+                    "strategy_id": sample.strategy_id,
+                    "notional_usd": sample.notional_usd,
+                    "entry_apxusd_amount": sample.entry_apxusd_amount,
+                    "start_amount": sample.start_amount,
+                    "side": "buy",
+                }
+                for metric_name in (APXUSD_PRICE_METRIC, APXUSD_BUY_PRICE_METRIC):
+                    metrics.append(
+                        MetricPoint(
+                            entity_id=APXUSD_MARKET_ENTITY_ID,
+                            entity_type="market_price",
+                            metric_name=metric_name,
+                            value=buy_price,
+                            unit="usd",
+                            source=sample.quote_provider,
+                            recorded_at=sample.recorded_at,
+                            details=price_details,
+                        )
+                    )
+            if sample.final_apxusd_amount > 0 and sample.final_amount > 0:
                 metrics.append(
                     MetricPoint(
                         entity_id=APXUSD_MARKET_ENTITY_ID,
                         entity_type="market_price",
-                        metric_name=APXUSD_PRICE_METRIC,
-                        value=float(sample.start_amount / sample.entry_apxusd_amount),
+                        metric_name=APXUSD_SELL_PRICE_METRIC,
+                        value=float(sample.final_amount / sample.final_apxusd_amount),
                         unit="usd",
                         source=sample.quote_provider,
                         recorded_at=sample.recorded_at,
@@ -1779,7 +1805,9 @@ class ArbitrageCollector(BaseCollector):
                             "monitor_id": sample.monitor.monitor_id,
                             "strategy_id": sample.strategy_id,
                             "notional_usd": sample.notional_usd,
-                            "entry_apxusd_amount": sample.entry_apxusd_amount,
+                            "final_apxusd_amount": sample.final_apxusd_amount,
+                            "final_amount": sample.final_amount,
+                            "side": "sell",
                         },
                     )
                 )

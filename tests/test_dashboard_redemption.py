@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from apyx_monitor.config import get_rule_catalog
 from apyx_monitor.routers.dashboard import _format_value, _moving_average_series
 
 
@@ -24,3 +25,14 @@ def test_moving_average_series_uses_time_window_and_sorts_points():
 
 def test_redemption_moving_average_metrics_are_formatted_as_percentages():
     assert _format_value("price_vs_redemption_spread_pct_ma_12h", 1.234) == "1.23%"
+
+
+def test_redemption_alert_rules_use_directional_spread_metrics():
+    rules = {rule.rule_id: rule for rule in get_rule_catalog().rules}
+
+    assert rules["apxusd_redemption_spread_pct_floor"].metric_name == (
+        "buy_price_vs_redemption_spread_pct"
+    )
+    assert rules["apxusd_redemption_spread_pct_ceiling"].metric_name == (
+        "sell_price_vs_redemption_spread_pct"
+    )
