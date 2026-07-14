@@ -1972,6 +1972,23 @@ def dashboard(
             const dataNode = document.getElementById('dashboard-data');
             let refreshInFlight = false;
             let refreshTimer = null;
+            const DASHBOARD_REFRESH_TIMEOUT_MS = 15000;
+            const ARBITRAGE_REFRESH_TIMEOUT_MS = 180000;
+
+            const fetchWithTimeout = async (url, options, timeoutMs) => {{
+                const controller = new AbortController();
+                const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+                try {{
+                    return await fetch(url, {{ ...options, signal: controller.signal }});
+                }} catch (error) {{
+                    if (error.name === 'AbortError') {{
+                        throw new Error(`请求超时（${{Math.round(timeoutMs / 1000)}} 秒）`);
+                    }}
+                    throw error;
+                }} finally {{
+                    window.clearTimeout(timeoutId);
+                }}
+            }};
 
             const wireViewTabs = () => {{
                 document.querySelectorAll('.chart-panel').forEach((panel) => {{
@@ -2065,11 +2082,11 @@ def dashboard(
                 const url = `/dashboard/fragment?hours=${{encodeURIComponent(hours)}}`;
 
                 try {{
-                    const response = await fetch(url, {{
+                    const response = await fetchWithTimeout(url, {{
                         headers: {{ 'X-Requested-With': 'fetch' }},
                         cache: 'no-store',
                         credentials: 'same-origin',
-                    }});
+                    }}, DASHBOARD_REFRESH_TIMEOUT_MS);
                     if (response.redirected || response.status === 401 || response.url.includes('/dashboard/login')) {{
                         window.location.href = '/dashboard/login?next=' + encodeURIComponent(window.location.pathname + window.location.search);
                         return;
@@ -2109,12 +2126,12 @@ def dashboard(
                 setStatus('套利计算刷新中...', 'loading');
 
                 try {{
-                    const response = await fetch('/api/v1/jobs/arbitrage', {{
+                    const response = await fetchWithTimeout('/api/v1/jobs/arbitrage', {{
                         method: 'POST',
                         headers: {{ 'X-Requested-With': 'fetch' }},
                         cache: 'no-store',
                         credentials: 'same-origin',
-                    }});
+                    }}, ARBITRAGE_REFRESH_TIMEOUT_MS);
                     if (response.redirected || response.status === 401 || response.url.includes('/dashboard/login')) {{
                         window.location.href = '/dashboard/login?next=' + encodeURIComponent(window.location.pathname + window.location.search);
                         return;
