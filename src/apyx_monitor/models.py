@@ -51,6 +51,13 @@ class AlertRuleOverride(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now, index=True)
 
 
+class MonitorControl(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    monitor_id: str = Field(sa_column=Column(String, unique=True, index=True, nullable=False))
+    enabled: bool = Field(default=True, nullable=False)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
 class OnChainEventCursor(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     cursor_id: str = Field(sa_column=Column(String, unique=True, index=True, nullable=False))

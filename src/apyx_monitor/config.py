@@ -28,11 +28,13 @@ class Settings(BaseSettings):
     )
     nav_curve_interval_seconds: int = Field(default=20, alias="NAV_CURVE_INTERVAL_SECONDS")
     arbitrage_interval_seconds: int = Field(default=600, alias="ARBITRAGE_INTERVAL_SECONDS")
-    finnhub_api_key: Optional[str] = Field(default=None, alias="FINNHUB_API_KEY")
-    finnhub_stock_symbol: str = Field(default="STRC", alias="FINNHUB_STOCK_SYMBOL")
-    finnhub_stock_interval_seconds: int = Field(
-        default=10,
-        alias="FINNHUB_STOCK_INTERVAL_SECONDS",
+    pool_arbitrage_interval_seconds: int = Field(
+        default=15,
+        alias="POOL_ARBITRAGE_INTERVAL_SECONDS",
+    )
+    crosschain_arbitrage_enabled: bool = Field(
+        default=True,
+        alias="CROSSCHAIN_ARBITRAGE_ENABLED",
     )
     arbitrage_curve_gate_enabled: bool = Field(default=True, alias="ARBITRAGE_CURVE_GATE_ENABLED")
     arbitrage_curve_gate_max_age_seconds: int = Field(
@@ -67,6 +69,7 @@ class Settings(BaseSettings):
     )
     feishu_webhook_url: Optional[str] = Field(default=None, alias="FEISHU_WEBHOOK_URL")
     feishu_secret: Optional[str] = Field(default=None, alias="FEISHU_SECRET")
+    ethereum_ws_url: Optional[str] = Field(default=None, alias="ETHEREUM_WS_URL")
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",
@@ -147,6 +150,22 @@ class ArbitrageMonitorDefinition(BaseModel):
     enabled: bool = True
 
 
+class PoolArbitrageMonitorDefinition(BaseModel):
+    monitor_id: str
+    label: str
+    chain: str = "ethereum"
+    curve_pool_address: str
+    v4_pool_id: str
+    v4_quoter_address: str
+    currency0_asset_id: str
+    currency1_asset_id: str
+    fee: int
+    tick_spacing: int
+    hooks_address: str = "0x0000000000000000000000000000000000000000"
+    notionals_usdc: list[float] = Field(default_factory=lambda: [100000])
+    enabled: bool = True
+
+
 class AssetCatalog(BaseModel):
     chains: list[ChainDefinition]
     assets: list[AssetDefinition]
@@ -154,6 +173,7 @@ class AssetCatalog(BaseModel):
     morpho_markets: list[MorphoMarketDefinition]
     curve_pools: list[CurvePoolDefinition] = []
     arbitrage_monitors: list[ArbitrageMonitorDefinition] = []
+    pool_arbitrage_monitors: list[PoolArbitrageMonitorDefinition] = []
 
     def chain_map(self) -> dict[str, ChainDefinition]:
         return {chain.chain: chain for chain in self.chains}

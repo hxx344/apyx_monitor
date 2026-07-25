@@ -1,13 +1,13 @@
 from .accountable import AccountableCollector
 from .arbitrage import ArbitrageCollector
-from .finnhub_stock import FinnhubStockCollector
 from .morpho import MorphoCollector
 from .onchain import OnChainCollector
+from .pool_arbitrage import PoolArbitrageCollector
 
 __all__ = [
     "AccountableCollector",
     "ArbitrageCollector",
-    "FinnhubStockCollector",
     "MorphoCollector",
     "OnChainCollector",
+    "PoolArbitrageCollector",
 ]

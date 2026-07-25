@@ -15,3 +15,9 @@ async def run_poll(request: Request) -> dict:
 async def run_arbitrage_poll(request: Request) -> dict:
     service = request.app.state.monitoring_service
     return await service.poll_arbitrage_once(force_new_cycle=True)
+
+
+@router.post("/pool-arbitrage")
+async def run_pool_arbitrage_poll(request: Request) -> dict:
+    service = request.app.state.monitoring_service
+    return await service.poll_pool_arbitrage_once()

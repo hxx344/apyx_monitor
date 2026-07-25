@@ -24,10 +24,11 @@ from ..collectors.arbitrage import (
     APXUSD_PRICE_METRIC,
     APXUSD_SELL_PRICE_METRIC,
 )
-from ..collectors.finnhub_stock import FINNHUB_STOCK_ENTITY_ID
+from ..collectors.pool_arbitrage import POOL_ARBITRAGE_DIRECTIONS
 from ..config import RuleDefinition, Settings, get_asset_catalog, get_rule_catalog, get_settings
 from ..db import get_session
-from ..models import AlertEvent, AlertRuleOverride, MetricSnapshot, utc_now
+from ..models import AlertEvent, AlertRuleOverride, MetricSnapshot, MonitorControl, utc_now
+from ..services.monitoring import CROSSCHAIN_ARBITRAGE_MONITOR_ID
 
 router = APIRouter(tags=["dashboard"])
 
@@ -98,6 +99,9 @@ ARBITRAGE_MONITORS = [
     monitor for monitor in get_asset_catalog().arbitrage_monitors if monitor.enabled
 ]
 ARBITRAGE_STRATEGY_IDS = ("buy-source-sell-target", "buy-target-sell-source")
+POOL_ARBITRAGE_MONITORS = [
+    monitor for monitor in get_asset_catalog().pool_arbitrage_monitors if monitor.enabled
+]
 REDEMPTION_SPREAD_PCT_METRIC = "price_vs_redemption_spread_pct"
 REDEMPTION_BUY_SPREAD_PCT_METRIC = "buy_price_vs_redemption_spread_pct"
 REDEMPTION_SELL_SPREAD_PCT_METRIC = "sell_price_vs_redemption_spread_pct"
@@ -216,6 +220,7 @@ THRESHOLD_RULE_IDS = [
     "curve_apyusd_apxusd_rate_deviation_ceiling",
     "apyx_capped_ratio_deviation_ceiling",
     "crosschain_arb_edge_opportunity",
+    "pool_arb_net_profit_opportunity",
 ]
 
 
@@ -670,177 +675,6 @@ def _metric_details(metric: MetricSnapshot | None) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def _stock_candles(session: Session, hours: int) -> list[dict]:
-    bucket_minutes = 1 if hours <= 6 else 5 if hours <= 24 else 15
-    since_at = datetime.now(timezone.utc) - timedelta(hours=hours)
-    rows = session.exec(
-        select(MetricSnapshot)
-        .where(
-            MetricSnapshot.entity_id == FINNHUB_STOCK_ENTITY_ID,
-            MetricSnapshot.metric_name == "price_usd",
-            MetricSnapshot.recorded_at >= since_at,
-        )
-        .order_by(MetricSnapshot.recorded_at.asc(), MetricSnapshot.id.asc())
-    ).all()
-    buckets: dict[datetime, list[MetricSnapshot]] = defaultdict(list)
-    interval_seconds = bucket_minutes * 60
-    for row in rows:
-        recorded_at = _ensure_utc(row.recorded_at)
-        bucket_ts = int(recorded_at.timestamp() // interval_seconds * interval_seconds)
-        bucket_at = datetime.fromtimestamp(bucket_ts, tz=timezone.utc)
-        buckets[bucket_at].append(row)
-
-    candles = []
-    for bucket_at, bucket_rows in sorted(buckets.items()):
-        values = [row.value for row in bucket_rows]
-        if not values:
-            continue
-        candles.append(
-            {
-                "at": bucket_at,
-                "open": values[0],
-                "high": max(values),
-                "low": min(values),
-                "close": values[-1],
-            }
-        )
-    return candles
-
-
-def _build_candlestick_svg(candles: list[dict], width: int = 760, height: int = 280) -> str:
-    if not candles:
-        return '<div class="empty">No STRC price history yet</div>'
-
-    padding_left = 58
-    padding_right = 18
-    padding_top = 18
-    padding_bottom = 30
-    plot_width = width - padding_left - padding_right
-    plot_height = height - padding_top - padding_bottom
-    min_value = min(candle["low"] for candle in candles)
-    max_value = max(candle["high"] for candle in candles)
-    if min_value == max_value:
-        min_value -= 0.01
-        max_value += 0.01
-    else:
-        padding = (max_value - min_value) * 0.14
-        min_value -= padding
-        max_value += padding
-
-    def y_for(value: float) -> float:
-        ratio = (value - min_value) / (max_value - min_value)
-        return padding_top + plot_height * (1 - ratio)
-
-    step_x = plot_width / max(len(candles), 1)
-    body_width = max(3.0, min(12.0, step_x * 0.58))
-    nodes = []
-    for index, candle in enumerate(candles):
-        x = padding_left + step_x * index + step_x / 2
-        open_y = y_for(candle["open"])
-        close_y = y_for(candle["close"])
-        high_y = y_for(candle["high"])
-        low_y = y_for(candle["low"])
-        color = "#34d399" if candle["close"] >= candle["open"] else "#fb7185"
-        body_y = min(open_y, close_y)
-        body_height = max(abs(close_y - open_y), 1.5)
-        label = _format_dt(candle["at"], "%m-%d %H:%M")
-        tooltip = (
-            f'{label} O {_format_value("price_usd", candle["open"])} '
-            f'H {_format_value("price_usd", candle["high"])} '
-            f'L {_format_value("price_usd", candle["low"])} '
-            f'C {_format_value("price_usd", candle["close"])}'
-        )
-        nodes.append(
-            f'<g class="candle-node" data-label="{escape(label)}" data-value="{escape(tooltip)}">'
-            f'<line x1="{x:.2f}" y1="{high_y:.2f}" x2="{x:.2f}" y2="{low_y:.2f}" stroke="{color}" stroke-width="1.4" />'
-            f'<rect x="{x - body_width / 2:.2f}" y="{body_y:.2f}" width="{body_width:.2f}" height="{body_height:.2f}" rx="1.5" fill="{color}" opacity="0.86" />'
-            "</g>"
-        )
-
-    grid_lines = []
-    y_axis = []
-    for y_ratio, value in (
-        (0, max_value),
-        (0.5, (max_value + min_value) / 2),
-        (1, min_value),
-    ):
-        y = padding_top + plot_height * y_ratio
-        grid_lines.append(
-            f'<line x1="{padding_left}" y1="{y:.1f}" x2="{width - padding_right}" y2="{y:.1f}" stroke="rgba(148,163,184,0.12)" stroke-width="1" />'
-        )
-        y_axis.append(
-            f'<text x="6" y="{y + 4:.1f}" fill="#94a3b8" font-size="11">{escape(_format_value("price_usd", value))}</text>'
-        )
-
-    x_labels = []
-    for index in {0, len(candles) // 2, len(candles) - 1}:
-        candle = candles[index]
-        x = padding_left + step_x * index + step_x / 2
-        x_labels.append(
-            f'<text x="{x:.1f}" y="{height - 8}" text-anchor="middle" fill="#94a3b8" font-size="11">{escape(_format_dt(candle["at"], "%m-%d %H:%M"))}</text>'
-        )
-
-    return (
-        f'<svg viewBox="0 0 {width} {height}" class="chart-svg candle-chart" preserveAspectRatio="none">'
-        + "".join(grid_lines)
-        + "".join(y_axis)
-        + "".join(nodes)
-        + "".join(x_labels)
-        + "</svg>"
-    )
-
-
-def _render_stock_panel(
-    session: Session,
-    latest_map: dict[tuple[str, str], MetricSnapshot],
-    hours: int,
-) -> str:
-    price_metric = latest_map.get((FINNHUB_STOCK_ENTITY_ID, "price_usd"))
-    details = _metric_details(price_metric)
-    phase = details.get("market_phase", "待配置" if price_metric is None else "未知")
-    session_name = details.get("market_session", "-")
-    previous_close = details.get("previous_close")
-    change = details.get("change")
-    change_pct = details.get("change_pct")
-    updated_at = f"{_format_dt(price_metric.recorded_at)} 北京时间" if price_metric else "-"
-    change_text = "-"
-    if isinstance(change, (int, float)) and isinstance(change_pct, (int, float)):
-        change_text = f"{change:+.4f} / {change_pct:+.2f}%"
-    candles = _stock_candles(session, hours)
-    latest_candle = candles[-1] if candles else None
-    latest_ohlc = "-"
-    if latest_candle:
-        latest_ohlc = (
-            f'O {_format_value("price_usd", latest_candle["open"])} · '
-            f'H {_format_value("price_usd", latest_candle["high"])} · '
-            f'L {_format_value("price_usd", latest_candle["low"])} · '
-            f'C {_format_value("price_usd", latest_candle["close"])}'
-        )
-    return f'''
-        <div class="panel full stock-panel">
-          <div class="panel-head">
-            <div>
-              <h3>STRC 实时价格</h3>
-              <p class="panel-subtitle">Finnhub REST 采样；后端默认每 10 秒刷新一次，K 线由采样价格聚合生成。</p>
-            </div>
-            <div class="stock-phase">{escape(str(phase))}</div>
-          </div>
-          <div class="stock-stats">
-            <div><span>当前价</span><strong>{escape(_format_value("price_usd", price_metric.value if price_metric else None))}</strong></div>
-            <div><span>阶段</span><strong>{escape(str(phase))}</strong><em>{escape(str(session_name))}</em></div>
-            <div><span>涨跌</span><strong>{escape(change_text)}</strong></div>
-            <div><span>昨收</span><strong>{escape(_format_value("price_usd", previous_close))}</strong></div>
-            <div><span>最新 K 线</span><strong>{escape(latest_ohlc)}</strong></div>
-            <div><span>更新时间</span><strong>{escape(updated_at)}</strong></div>
-          </div>
-          <div class="chart-view active" data-view="chart">
-            <div class="chart-wrap stock-chart-wrap">{_build_candlestick_svg(candles)}</div>
-            <div class="chart-tooltip" hidden></div>
-          </div>
-        </div>
-        '''
-
-
 def _render_cards(session: Session, latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
     cards = []
     for item in CARD_DEFS:
@@ -969,7 +803,7 @@ def _render_hedged_nav_discount_card(
             <div class="card strategy-card">
               <div class="label">{escape(item["label"])}</div>
               <div class="value">{escape(_format_value("annualized_apy_pct", apy_metric.value if apy_metric else None))}</div>
-              <div class="meta">假设 Lighter 做空等额 STRC 对冲 apxUSD 风险；更新时间：{escape(recorded_at)}</div>
+              <div class="meta">假设使用等额空头对冲 apxUSD 风险；更新时间：{escape(recorded_at)}</div>
             </div>
             '''
 
@@ -1313,6 +1147,11 @@ def _arbitrage_sample_entity_id(monitor_id: str, strategy_id: str, notional: flo
     return f"{monitor_id}-{strategy_id}-{notional_label}"
 
 
+def _pool_arbitrage_sample_entity_id(monitor_id: str, direction: str, notional: float) -> str:
+    notional_label = f"{int(notional)}" if float(notional).is_integer() else str(notional)
+    return f"{monitor_id}-{direction}-{notional_label}"
+
+
 def _format_route_amount(value: object) -> str:
     if not isinstance(value, (int, float)):
         return "-"
@@ -1444,7 +1283,10 @@ def _render_arbitrage_route(details: dict) -> str:
     ) + "</span>"
 
 
-def _render_arbitrage_section(latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
+def _render_arbitrage_section(
+    latest_map: dict[tuple[str, str], MetricSnapshot],
+    enabled: bool,
+) -> str:
     best_profit = latest_map.get(("arb-apyusd-apxusd-crosschain", "best_net_profit_usd"))
     best_edge = latest_map.get(("arb-apyusd-apxusd-crosschain", "best_net_edge_pct"))
     best_notional = latest_map.get(("arb-apyusd-apxusd-crosschain", "best_notional_usd"))
@@ -1498,6 +1340,10 @@ def _render_arbitrage_section(latest_map: dict[tuple[str, str], MetricSnapshot])
 
     sorted_rows = [row_html for _, row_html in sorted(rows, key=lambda row: row[0], reverse=True)]
     table_body = "".join(sorted_rows) if sorted_rows else '<tr><td colspan="11">暂无套利报价</td></tr>'
+    control_label = "关闭监控" if enabled else "开启监控"
+    control_value = "false" if enabled else "true"
+    state_label = "运行中" if enabled else "已暂停"
+    paused_notice = "" if enabled else '<p class="monitor-paused">监控已暂停，以下保留最后一次报价。</p>'
     return f'''
     <div class="panel full arbitrage-panel">
       <div class="panel-head">
@@ -1505,11 +1351,20 @@ def _render_arbitrage_section(latest_map: dict[tuple[str, str], MetricSnapshot])
           <h3>闭环跨链套利监控 · apyUSD / apxUSD</h3>
           <p class="panel-subtitle">以 Ethereum USDC 为本金和最终结算资产；先用 USDC 买入 apxUSD，完成跨链 apyUSD / apxUSD 闭环后再换回 USDC 计算净利润。</p>
         </div>
-        <div class="legend">
-          <span class="legend-item">最佳策略：{escape(str(best_label))}</span>
-          <span class="legend-item">最佳本金：{escape(_format_value("best_notional_usd", best_notional.value if best_notional else None))}</span>
-          <span class="legend-item">更新时间：{escape(best_updated_at)}</span>
+        <div class="monitor-control">
+          <span class="monitor-state {'enabled' if enabled else 'disabled'}">{state_label}</span>
+          <form method="post" action="/dashboard/monitor-controls">
+            <input type="hidden" name="monitor_id" value="{CROSSCHAIN_ARBITRAGE_MONITOR_ID}" />
+            <input type="hidden" name="enabled" value="{control_value}" />
+            <button type="submit">{control_label}</button>
+          </form>
         </div>
+      </div>
+      {paused_notice}
+      <div class="legend arbitrage-legend">
+        <span class="legend-item">最佳策略：{escape(str(best_label))}</span>
+        <span class="legend-item">最佳本金：{escape(_format_value("best_notional_usd", best_notional.value if best_notional else None))}</span>
+        <span class="legend-item">更新时间：{escape(best_updated_at)}</span>
       </div>
       <div class="arb-summary">
         <div><span>最佳净利润</span><strong>{escape(_format_value("best_net_profit_usd", best_profit.value if best_profit else None))}</strong></div>
@@ -1537,6 +1392,82 @@ def _render_arbitrage_section(latest_map: dict[tuple[str, str], MetricSnapshot])
           <tbody>{table_body}</tbody>
         </table>
       </div>
+    </div>
+    '''
+
+
+def _render_pool_arbitrage_section(latest_map: dict[tuple[str, str], MetricSnapshot]) -> str:
+    if not POOL_ARBITRAGE_MONITORS:
+        return ""
+    monitor = POOL_ARBITRAGE_MONITORS[0]
+    best_profit = latest_map.get((monitor.monitor_id, "best_net_profit_usd"))
+    best_edge = latest_map.get((monitor.monitor_id, "best_net_edge_pct"))
+    best_notional = latest_map.get((monitor.monitor_id, "best_notional_usdc"))
+    best_details = _metric_details(best_profit)
+    rows: list[tuple[float, str]] = []
+
+    for notional in monitor.notionals_usdc:
+        for direction in POOL_ARBITRAGE_DIRECTIONS:
+            entity_id = _pool_arbitrage_sample_entity_id(
+                monitor.monitor_id, direction, float(notional)
+            )
+            net_profit = latest_map.get((entity_id, "net_profit_usd"))
+            if net_profit is None:
+                continue
+            details = _metric_details(net_profit)
+            intermediate = latest_map.get((entity_id, "intermediate_apxusd"))
+            final_usdc = latest_map.get((entity_id, "final_usdc"))
+            net_edge = latest_map.get((entity_id, "net_edge_pct"))
+            row_class = "positive" if net_profit.value > 0 else "negative"
+            route = details.get("strategy_label", direction)
+            rows.append(
+                (
+                    net_profit.value,
+                    f'''
+                    <tr class="{row_class}">
+                      <td>{escape(str(route))}</td>
+                      <td>{float(notional):,.0f} USDC</td>
+                      <td>{escape(_format_value("intermediate_apxusd", intermediate.value if intermediate else None))}</td>
+                      <td>{escape(_format_value("final_usdc", final_usdc.value if final_usdc else None))}</td>
+                      <td>{escape(_format_value("net_profit_usd", net_profit.value))}</td>
+                      <td>{escape(_format_value("net_edge_pct", net_edge.value if net_edge else None))}</td>
+                      <td>{escape(f"{_format_dt(net_profit.recorded_at)} 北京时间")}</td>
+                    </tr>
+                    ''',
+                )
+            )
+
+    table_body = "".join(row for _, row in sorted(rows, reverse=True))
+    if not table_body:
+        table_body = '<tr><td colspan="7">暂无池间实时报价</td></tr>'
+    updated_at = f"{_format_dt(best_profit.recorded_at)} 北京时间" if best_profit else "-"
+    best_route = best_details.get("strategy_label", "-")
+    return f'''
+    <div class="panel full pool-arbitrage-panel">
+      <div class="panel-head">
+        <div>
+          <h3>Ethereum 池间套利 · apxUSD / USDC</h3>
+          <p class="panel-subtitle">直接查询指定 Curve 池与 Uniswap v4 PoolKey 的双向可成交报价；不监听其他地址或已完成交易。</p>
+        </div>
+        <div class="legend">
+          <span class="legend-item">v4 Pool {escape(_short_address(monitor.v4_pool_id))}</span>
+          <span class="legend-item">Curve {escape(_short_address(monitor.curve_pool_address))}</span>
+          <span class="legend-item">区块 {escape(str(best_details.get("block_number", "-")))}</span>
+        </div>
+      </div>
+      <div class="arb-summary">
+        <div><span>最佳报价利润</span><strong>{escape(_format_value("best_net_profit_usd", best_profit.value if best_profit else None))}</strong></div>
+        <div><span>最佳收益率</span><strong>{escape(_format_value("best_net_edge_pct", best_edge.value if best_edge else None))}</strong></div>
+        <div><span>固定本金</span><strong>{escape(f"{best_notional.value:,.0f} USDC" if best_notional else "-")}</strong></div>
+        <div><span>最佳方向</span><strong>{escape(str(best_route))}</strong></div>
+      </div>
+      <div class="trend-table-wrap">
+        <table class="trend-table pool-arbitrage-table">
+          <thead><tr><th>路径</th><th>投入</th><th>中间 apxUSD</th><th>最终 USDC</th><th>报价利润</th><th>收益率</th><th>更新时间</th></tr></thead>
+          <tbody>{table_body}</tbody>
+        </table>
+      </div>
+      <p class="panel-subtitle">最近完整报价：{escape(updated_at)}。利润仅按最终 USDC 减去初始 USDC 计算，不包含 gas、builder payment、私有订单流费用及失败交易成本。</p>
     </div>
     '''
 
@@ -1634,12 +1565,13 @@ def _render_dashboard_data(
     hours: int,
     threshold_updated: bool,
 ) -> str:
+    crosschain_enabled = _crosschain_arbitrage_enabled(session)
     return f"""
     <div class="cards">{_render_cards(session, latest_map)}</div>
 
     <div class="grid">
-            {_render_stock_panel(session, latest_map, hours)}
-            {_render_arbitrage_section(latest_map)}
+            {_render_pool_arbitrage_section(latest_map)}
+            {_render_arbitrage_section(latest_map, crosschain_enabled)}
             {_render_threshold_controls(rule_map, latest_map, hours, threshold_updated)}
             {_render_charts(session, hours)}
             {_render_redemption_percentage_panel(session, hours)}
@@ -1728,6 +1660,40 @@ def _upsert_rule_override(session: Session, rule_id: str, threshold: float) -> N
         override.updated_at = utc_now()
 
 
+def _crosschain_arbitrage_enabled(session: Session) -> bool:
+    control = session.exec(
+        select(MonitorControl).where(
+            MonitorControl.monitor_id == CROSSCHAIN_ARBITRAGE_MONITOR_ID
+        )
+    ).first()
+    if control is None:
+        return get_settings().crosschain_arbitrage_enabled
+    return control.enabled
+
+
+@router.post("/dashboard/monitor-controls")
+def update_monitor_control(
+    request: Request,
+    monitor_id: str = Form(...),
+    enabled: bool = Form(...),
+    session: Session = Depends(get_session),
+):
+    _require_dashboard_auth(request)
+    if monitor_id != CROSSCHAIN_ARBITRAGE_MONITOR_ID:
+        raise HTTPException(status_code=400, detail="unknown monitor")
+
+    control = session.exec(
+        select(MonitorControl).where(MonitorControl.monitor_id == monitor_id)
+    ).first()
+    if control is None:
+        session.add(MonitorControl(monitor_id=monitor_id, enabled=enabled))
+    else:
+        control.enabled = enabled
+        control.updated_at = utc_now()
+    session.commit()
+    return RedirectResponse(url="/dashboard", status_code=303)
+
+
 @router.post("/dashboard/thresholds")
 def update_threshold(
     request: Request,
@@ -1793,6 +1759,8 @@ def dashboard(
     rule_map = _effective_rule_map(session)
     status_text = _dashboard_status_text(latest_map)
     hour_options = _render_hour_options(hours)
+    crosschain_enabled = _crosschain_arbitrage_enabled(session)
+    crosschain_disabled_attr = "" if crosschain_enabled else " disabled"
     dashboard_data = _render_dashboard_data(session, latest_map, rule_map, hours, bool(threshold_updated))
 
     return f"""
@@ -1889,18 +1857,16 @@ def dashboard(
     .morpho-panel {{ height: 100%; display: flex; flex-direction: column; }}
     .table-wrap {{ flex: 1; overflow: auto; }}
     .chart-wrap {{ height: 280px; width: 100%; position: relative; border-radius: 14px; background: radial-gradient(circle at top left, rgba(96,165,250,0.06), transparent 35%), linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); padding: 4px; }}
-    .stock-panel .panel-head {{ align-items: center; }}
-    .stock-phase {{ display: inline-flex; align-items: center; justify-content: center; min-width: 70px; padding: 8px 12px; border-radius: 999px; color: #d1fae5; background: rgba(16,185,129,0.15); border: 1px solid rgba(52,211,153,0.32); font-size: 13px; font-weight: 700; }}
-    .stock-stats {{ display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }}
-    .stock-stats div {{ min-width: 0; padding: 11px 12px; border-radius: 12px; border: 1px solid rgba(148,163,184,0.12); background: rgba(15,23,42,0.48); }}
-    .stock-stats span {{ display: block; color: var(--muted); font-size: 11px; margin-bottom: 5px; }}
-    .stock-stats strong {{ display: block; color: #e2e8f0; font-size: 15px; line-height: 1.2; overflow-wrap: anywhere; }}
-    .stock-stats em {{ display: block; color: var(--muted); font-size: 11px; font-style: normal; margin-top: 3px; }}
-    .stock-chart-wrap {{ height: 320px; }}
-    .candle-node {{ cursor: crosshair; }}
     .chart-svg {{ width: 100%; height: 100%; display: block; }}
     .legend {{ display: flex; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }}
     .legend-item {{ color: var(--muted); font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }}
+    .arbitrage-legend {{ justify-content: flex-start; margin: -2px 0 14px; }}
+    .monitor-control {{ display: flex; align-items: center; gap: 10px; flex-shrink: 0; }}
+    .monitor-control form {{ margin: 0; }}
+    .monitor-state {{ display: inline-flex; align-items: center; padding: 5px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; }}
+    .monitor-state.enabled {{ color: #86efac; background: rgba(34,197,94,0.13); border: 1px solid rgba(74,222,128,0.3); }}
+    .monitor-state.disabled {{ color: #fcd34d; background: rgba(245,158,11,0.13); border: 1px solid rgba(251,191,36,0.3); }}
+    .monitor-paused {{ margin: 0 0 14px; padding: 9px 11px; color: #fcd34d; background: rgba(245,158,11,0.08); border: 1px solid rgba(251,191,36,0.2); border-radius: 8px; font-size: 13px; }}
     .legend-dot {{ width: 10px; height: 10px; border-radius: 999px; display: inline-block; }}
     .interactive-legend {{ gap: 8px; }}
     .redemption-ma-summary {{ justify-content: flex-start; margin: -4px 0 14px; }}
@@ -1941,7 +1907,6 @@ def dashboard(
             .panel-actions {{ align-items: flex-start; max-width: 100%; }}
       .legend {{ justify-content: flex-start; }}
       .arb-summary {{ grid-template-columns: 1fr; }}
-      .stock-stats {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
     }}
   </style>
 </head>
@@ -1955,7 +1920,8 @@ def dashboard(
       <form class="actions" method="get" action="/dashboard">
         <select name="hours">{hour_options}</select>
         <button type="submit" id="dashboard-refresh-button">刷新</button>
-        <button type="button" id="arbitrage-refresh-button">刷新套利计算</button>
+        <button type="button" id="pool-arbitrage-refresh-button">刷新池间套利</button>
+        <button type="button" id="arbitrage-refresh-button"{crosschain_disabled_attr}>刷新跨链套利</button>
                 <button type="submit" formmethod="post" formaction="/dashboard/logout">退出</button>
         <div class="status" id="dashboard-status">{escape(status_text)}</div>
       </form>
@@ -1968,8 +1934,10 @@ def dashboard(
             const refreshForm = document.querySelector('.actions');
             const refreshButton = document.getElementById('dashboard-refresh-button');
             const arbitrageRefreshButton = document.getElementById('arbitrage-refresh-button');
+            const poolArbitrageRefreshButton = document.getElementById('pool-arbitrage-refresh-button');
             const statusNode = document.getElementById('dashboard-status');
             const dataNode = document.getElementById('dashboard-data');
+            const crosschainEnabled = {str(crosschain_enabled).lower()};
             let refreshInFlight = false;
             let refreshTimer = null;
             const DASHBOARD_REFRESH_TIMEOUT_MS = 15000;
@@ -2039,23 +2007,6 @@ def dashboard(
                             tooltip.hidden = true;
                         }});
                     }});
-                    panel.querySelectorAll('.candle-node').forEach((candle) => {{
-                        candle.addEventListener('mouseenter', (event) => {{
-                            tooltip.hidden = false;
-                            tooltip.innerHTML = `<div><strong>STRC K线</strong></div><div>${{candle.dataset.value}}</div>`;
-                            const panelRect = panel.getBoundingClientRect();
-                            tooltip.style.left = `${{event.clientX - panelRect.left + 14}}px`;
-                            tooltip.style.top = `${{event.clientY - panelRect.top - 8}}px`;
-                        }});
-                        candle.addEventListener('mousemove', (event) => {{
-                            const panelRect = panel.getBoundingClientRect();
-                            tooltip.style.left = `${{event.clientX - panelRect.left + 14}}px`;
-                            tooltip.style.top = `${{event.clientY - panelRect.top - 8}}px`;
-                        }});
-                        candle.addEventListener('mouseleave', () => {{
-                            tooltip.hidden = true;
-                        }});
-                    }});
                 }});
             }};
 
@@ -2076,6 +2027,7 @@ def dashboard(
                 refreshInFlight = true;
                 refreshButton.disabled = true;
                 arbitrageRefreshButton.disabled = true;
+                poolArbitrageRefreshButton.disabled = true;
                 const previousStatus = statusNode.textContent;
                 setStatus('刷新中...', 'loading');
                 const hours = refreshForm.querySelector('select[name="hours"]').value;
@@ -2114,7 +2066,8 @@ def dashboard(
                 }} finally {{
                     refreshInFlight = false;
                     refreshButton.disabled = false;
-                    arbitrageRefreshButton.disabled = false;
+                    arbitrageRefreshButton.disabled = !crosschainEnabled;
+                    poolArbitrageRefreshButton.disabled = false;
                 }}
             }};
 
@@ -2123,6 +2076,7 @@ def dashboard(
                 refreshInFlight = true;
                 refreshButton.disabled = true;
                 arbitrageRefreshButton.disabled = true;
+                poolArbitrageRefreshButton.disabled = true;
                 setStatus('套利计算刷新中...', 'loading');
 
                 try {{
@@ -2140,7 +2094,7 @@ def dashboard(
                         throw new Error(`HTTP ${{response.status}}`);
                     }}
                     const result = await response.json();
-                    if (result.status === 'skipped') {{
+                    if (result.status === 'skipped' || result.status === 'disabled') {{
                         throw new Error(result.reason || 'poll already in progress');
                     }}
                     setStatus('套利计算已触发，刷新看板数据...', 'loading');
@@ -2150,9 +2104,43 @@ def dashboard(
                 }} finally {{
                     refreshInFlight = false;
                     refreshButton.disabled = false;
-                    arbitrageRefreshButton.disabled = false;
+                    arbitrageRefreshButton.disabled = !crosschainEnabled;
+                    poolArbitrageRefreshButton.disabled = false;
                 }}
 
+                refreshDashboard();
+            }};
+
+            const refreshPoolArbitrage = async () => {{
+                if (refreshInFlight) return;
+                refreshInFlight = true;
+                refreshButton.disabled = true;
+                arbitrageRefreshButton.disabled = true;
+                poolArbitrageRefreshButton.disabled = true;
+                setStatus('Curve / v4 报价刷新中...', 'loading');
+
+                try {{
+                    const response = await fetchWithTimeout('/api/v1/jobs/pool-arbitrage', {{
+                        method: 'POST',
+                        headers: {{ 'X-Requested-With': 'fetch' }},
+                        cache: 'no-store',
+                        credentials: 'same-origin',
+                    }}, ARBITRAGE_REFRESH_TIMEOUT_MS);
+                    if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+                    const result = await response.json();
+                    if (result.status === 'skipped') {{
+                        throw new Error(result.reason || 'poll already in progress');
+                    }}
+                    setStatus('池间套利报价已更新，正在刷新看板...', 'loading');
+                }} catch (error) {{
+                    setStatus(`池间套利刷新失败：${{error.message}}`, 'error');
+                    return;
+                }} finally {{
+                    refreshInFlight = false;
+                    refreshButton.disabled = false;
+                    arbitrageRefreshButton.disabled = !crosschainEnabled;
+                    poolArbitrageRefreshButton.disabled = false;
+                }}
                 refreshDashboard();
             }};
 
@@ -2165,6 +2153,7 @@ def dashboard(
 
             refreshForm.querySelector('select[name="hours"]').addEventListener('change', refreshDashboard);
             arbitrageRefreshButton.addEventListener('click', refreshArbitrage);
+            poolArbitrageRefreshButton.addEventListener('click', refreshPoolArbitrage);
 
             refreshTimer = window.setInterval(refreshDashboard, 10000);
             window.addEventListener('beforeunload', () => {{

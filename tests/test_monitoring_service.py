@@ -20,6 +20,28 @@ def test_arbitrage_poll_waits_for_active_collection_lock():
     asyncio.run(_run_arbitrage_poll_waits_for_active_collection_lock_test())
 
 
+def test_arbitrage_poll_skips_collector_when_monitor_is_disabled():
+    asyncio.run(_run_arbitrage_poll_skips_collector_when_monitor_is_disabled_test())
+
+
+async def _run_arbitrage_poll_skips_collector_when_monitor_is_disabled_test():
+    class FailingArbitrageCollector:
+        async def collect(self, **kwargs):
+            raise AssertionError("disabled cross-chain collector must not run")
+
+    service = MonitoringService()
+    service.arbitrage_collector = FailingArbitrageCollector()
+    service.is_crosschain_arbitrage_enabled = lambda: False
+
+    result = await service.poll_arbitrage_once()
+
+    assert result == {
+        "status": "disabled",
+        "reason": "cross-chain arbitrage monitoring is off",
+    }
+    assert service.last_arbitrage_status == "disabled"
+
+
 async def _run_arbitrage_poll_waits_for_active_collection_lock_test():
     class FakeArbitrageCollector:
         def __init__(self) -> None:
@@ -32,6 +54,7 @@ async def _run_arbitrage_poll_waits_for_active_collection_lock_test():
     service = MonitoringService()
     fake_collector = FakeArbitrageCollector()
     service.arbitrage_collector = fake_collector
+    service.is_crosschain_arbitrage_enabled = lambda: True
     service._persist_and_evaluate = lambda points: RuleEvaluationResult(events=[], notifications=[])
 
     await service._lock.acquire()

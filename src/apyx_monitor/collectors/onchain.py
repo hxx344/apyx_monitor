@@ -848,7 +848,7 @@ def _apyusd_hedged_nav_discount_metrics(
     annualized_apy_pct = (nav_to_entry_ratio ** (365 / APYUSD_UNLOCK_DAYS) - 1) * 100
     source = "derived:onchain:nav_curve_fast" if fast_scan else "derived:onchain"
     details = {
-        "strategy": "long_apyusd_short_strc_apxusd_hedge",
+        "strategy": "long_apyusd_short_apxusd_risk_hedge",
         "unlock_days": APYUSD_UNLOCK_DAYS,
         "exchange_rate": exchange_rate,
         "convert_to_assets": convert_to_assets,

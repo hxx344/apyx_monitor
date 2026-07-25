@@ -202,6 +202,10 @@ class RuleEngine:
     ) -> str:
         if rule.rule_id == "crosschain_arb_edge_opportunity":
             return RuleEngine._build_arbitrage_summary(rule, current_value, status, details or {})
+        if rule.rule_id == "pool_arb_net_profit_opportunity":
+            return RuleEngine._build_pool_arbitrage_summary(
+                rule, current_value, status, details or {}
+            )
         if rule.rule_id == "eth_cd2a_336555_approval_detected":
             return RuleEngine._build_approval_summary(rule, status, details or {})
         operator_map = {"lt": "<", "lte": "<=", "gt": ">", "gte": ">="}
@@ -272,6 +276,34 @@ class RuleEngine:
         events_in_scan = details.get("events_in_scan")
         if isinstance(events_in_scan, int) and events_in_scan > 1:
             lines.append(f"本轮命中事件数: {events_in_scan}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_pool_arbitrage_summary(
+        rule: RuleDefinition,
+        current_value: float,
+        status: str,
+        details: dict,
+    ) -> str:
+        prefix = "触发" if status == "firing" else "恢复"
+        lines = [
+            f"{prefix}规则: {rule.description}",
+            f"最佳报价利润: {current_value:,.4f} USDC",
+            f"告警阈值: > {rule.threshold:,.4f} USDC",
+        ]
+        for label, key, suffix in (
+            ("方向", "strategy_label", ""),
+            ("本金", "notional_usd", " USDC"),
+            ("最终金额", "final_amount", " USDC"),
+            ("净利率", "net_edge_pct", "%"),
+            ("区块", "block_number", ""),
+        ):
+            value = details.get(key)
+            if value is not None:
+                formatted = f"{value:,.6f}" if isinstance(value, float) else str(value)
+                lines.append(f"{label}: {formatted}{suffix}")
+        lines.append(f"v4 Pool: {details.get('v4_pool_id', '-')}")
+        lines.append(f"Curve Pool: {details.get('curve_pool_address', '-')}")
         return "\n".join(lines)
 
     @staticmethod

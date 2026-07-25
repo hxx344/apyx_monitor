@@ -5,6 +5,7 @@
 - `apxUSD` / `apyUSD` 的 TVL 与基础链上指标
 - Curve `apyUSD/apxUSD` 池子的实时兑换汇率
 - Ethereum / Base / BSC `apyUSD` 与 `apxUSD` 的 PendleSwap 闭环跨链套利报价监控
+- Ethereum 指定 Curve 与 Uniswap v4 `apxUSD/USDC` 池的双向闭环套利报价监控
 - Morpho 市场的可借款额、借款利率、利用率
 - 闭环跨链套利利润率超过阈值时的飞书机器人告警
 - Curve 汇率偏离净值告警、Apyx Capped Ratio 脱锚告警
@@ -53,6 +54,7 @@ uvicorn apyx_monitor.main:app --reload
 - `GET /api/v1/alerts?status=firing`
 - `POST /api/v1/jobs/poll`
 - `POST /api/v1/jobs/arbitrage`
+- `POST /api/v1/jobs/pool-arbitrage`
 
 ### Dashboard 登录
 
@@ -96,6 +98,7 @@ uvicorn apyx_monitor.main:app --host 0.0.0.0 --port 8000 --workers 1
 - 采集间隔由 `COLLECTION_INTERVAL_SECONDS` 控制，默认每 60 秒采集一次。过低的间隔会增加 RPC/API 压力和数据库写入压力。
 - NAV/Curve 快速扫描由 `NAV_CURVE_INTERVAL_SECONDS` 控制，默认每 20 秒采集一次 `apyUSD convertToAssets()`、Curve `get_dy()` 和偏离净值指标，不会额外请求 Pendle/Morpho。
 - 闭环套利除 Curve/NAV 变化触发外，还会由 `ARBITRAGE_INTERVAL_SECONDS` 定时强制触发一次，默认每 600 秒（10 分钟）执行；看板也提供“刷新套利计算”按钮手动触发。
+- Curve/v4 池间套利固定计算 100,000 USDC 本金的两个方向；配置 Alchemy WebSocket 后由每个 Ethereum 新区块触发，否则按 `POOL_ARBITRAGE_INTERVAL_SECONDS` 定时回退。报价利润不扣除 gas。
 - 每次发版后需要重启服务，让数据库 PRAGMA、索引和新代码生效。
 
 ### 启动后检查
@@ -110,6 +113,7 @@ curl http://127.0.0.1:8000/api/v1/metrics/latest
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/jobs/poll
 curl -X POST http://127.0.0.1:8000/api/v1/jobs/arbitrage
+curl -X POST http://127.0.0.1:8000/api/v1/jobs/pool-arbitrage
 ```
 
 ### 数据增长与清理
@@ -125,6 +129,7 @@ sqlite3 data/apyx_monitor.db "DELETE FROM metricsnapshot WHERE recorded_at < dat
 ## 目录结构
 
 - `config/assets.yaml`：资产、合约、Morpho 和套利路径配置
+- `pool_arbitrage_monitors` 配置指定 Curve 池地址、Uniswap v4 Pool ID/PoolKey、报价器和本金。
 - `config/rules.yaml`：告警规则
 - `docs/data-sources.md`：已确认资料来源
 - `src/apyx_monitor/`：应用代码

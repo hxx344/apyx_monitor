@@ -4,16 +4,18 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy import delete
 from sqlmodel import Session, desc, select
+from websockets.asyncio.client import connect
 
 from ..collectors import (
     AccountableCollector,
     ArbitrageCollector,
-    FinnhubStockCollector,
     MorphoCollector,
     OnChainCollector,
+    PoolArbitrageCollector,
 )
 from ..collectors.accountable import APXUSD_REDEMPTION_ENTITY_ID, REDEMPTION_VALUE_METRIC
 from ..collectors.arbitrage import (
@@ -25,7 +27,7 @@ from ..collectors.arbitrage import (
 from ..collectors.base import BaseCollector, MetricPoint
 from ..config import get_asset_catalog, get_rule_catalog, get_settings
 from ..db import engine
-from ..models import MetricSnapshot
+from ..models import MetricSnapshot, MonitorControl
 from .alerting import FeishuNotifier
 from .rule_engine import NotificationMessage, RuleEngine, RuleEvaluationResult
 
@@ -40,6 +42,7 @@ REDEMPTION_MA_WINDOWS = {
     "price_vs_redemption_spread_pct_ma_72h": 72,
     "price_vs_redemption_spread_pct_ma_7d": 24 * 7,
 }
+CROSSCHAIN_ARBITRAGE_MONITOR_ID = "crosschain_arbitrage"
 
 
 class MonitoringService:
@@ -49,16 +52,16 @@ class MonitoringService:
         self.rule_catalog = get_rule_catalog()
         self.onchain_collector = OnChainCollector(self.settings, self.asset_catalog)
         self.arbitrage_collector = ArbitrageCollector(self.settings, self.asset_catalog)
-        self.finnhub_stock_collector = FinnhubStockCollector(self.settings, self.asset_catalog)
+        self.pool_arbitrage_collector = PoolArbitrageCollector(self.settings, self.asset_catalog)
         self.collectors = [
             self.onchain_collector,
             MorphoCollector(self.settings, self.asset_catalog),
-            self.arbitrage_collector,
             AccountableCollector(self.settings),
         ]
         self.rule_engine = RuleEngine(self.rule_catalog, FeishuNotifier(self.settings))
         self._lock = asyncio.Lock()
-        self._finnhub_stock_lock = asyncio.Lock()
+        self._pool_arbitrage_lock = asyncio.Lock()
+        self._last_pool_arbitrage_block: tuple[int, str] | None = None
         self.last_run_at: datetime | None = None
         self.last_run_status: str = "never"
         self.last_errors: dict[str, str] = {}
@@ -68,10 +71,21 @@ class MonitoringService:
         self.last_arbitrage_run_at: datetime | None = None
         self.last_arbitrage_status: str = "never"
         self.last_arbitrage_errors: dict[str, str] = {}
-        self.last_finnhub_stock_run_at: datetime | None = None
-        self.last_finnhub_stock_status: str = "never"
-        self.last_finnhub_stock_errors: dict[str, str] = {}
+        self.last_pool_arbitrage_run_at: datetime | None = None
+        self.last_pool_arbitrage_status: str = "never"
+        self.last_pool_arbitrage_errors: dict[str, str] = {}
         self._last_metric_retention_cleanup_at: datetime | None = None
+
+    def is_crosschain_arbitrage_enabled(self) -> bool:
+        with Session(engine) as session:
+            control = session.exec(
+                select(MonitorControl).where(
+                    MonitorControl.monitor_id == CROSSCHAIN_ARBITRAGE_MONITOR_ID
+                )
+            ).first()
+        if control is None:
+            return self.settings.crosschain_arbitrage_enabled
+        return control.enabled
 
     async def poll_once(self) -> dict[str, object]:
         if self._lock.locked():
@@ -126,6 +140,10 @@ class MonitoringService:
         wait_for_lock_seconds: float = 120.0,
         force_new_cycle: bool = False,
     ) -> dict[str, object]:
+        if not self.is_crosschain_arbitrage_enabled():
+            self.last_arbitrage_status = "disabled"
+            return {"status": "disabled", "reason": "cross-chain arbitrage monitoring is off"}
+
         if self._lock.locked():
             logger.info(
                 "闭环套利刷新等待中 │ 原因=已有采集任务正在运行 │ 最长等待=%.0f秒",
@@ -168,40 +186,113 @@ class MonitoringService:
         finally:
             self._lock.release()
 
-    async def poll_finnhub_stock_once(self) -> dict[str, object]:
-        if self._finnhub_stock_lock.locked():
-            return {"status": "skipped", "reason": "finnhub stock poll already in progress"}
+    @property
+    def pool_arbitrage_ws_url(self) -> str | None:
+        configured = (self.settings.ethereum_ws_url or "").strip()
+        if configured:
+            return configured
+        ethereum = self.asset_catalog.chain_map().get("ethereum")
+        if ethereum is None:
+            return None
+        rpc_url = ethereum.resolve_rpc_url()
+        parsed = urlsplit(rpc_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return None
+        if not parsed.hostname.endswith(".alchemy.com"):
+            return None
+        return urlunsplit(("wss", parsed.netloc, parsed.path, parsed.query, parsed.fragment))
 
-        async with self._finnhub_stock_lock:
-            self.last_finnhub_stock_errors = {}
+    async def watch_pool_arbitrage_blocks(self) -> None:
+        ws_url = self.pool_arbitrage_ws_url
+        if not ws_url:
+            return
+        retry_seconds = 1
+        while True:
+            try:
+                async with connect(
+                    ws_url,
+                    open_timeout=self.settings.http_timeout_seconds,
+                    ping_interval=20,
+                    ping_timeout=20,
+                ) as socket:
+                    await socket.send(
+                        json.dumps(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "eth_subscribe",
+                                "params": ["newHeads"],
+                            }
+                        )
+                    )
+                    subscription = json.loads(await socket.recv())
+                    if subscription.get("error"):
+                        raise RuntimeError(str(subscription["error"]))
+                    retry_seconds = 1
+                    logger.info("Curve/v4 套利监控已订阅 Ethereum 新区块")
+                    async for raw_message in socket:
+                        payload = json.loads(raw_message)
+                        header = payload.get("params", {}).get("result", {})
+                        number_hex = header.get("number")
+                        block_hash = str(header.get("hash") or "")
+                        if not number_hex:
+                            continue
+                        block_number = int(number_hex, 16)
+                        block_key = (block_number, block_hash)
+                        if block_key == self._last_pool_arbitrage_block:
+                            continue
+                        self._last_pool_arbitrage_block = block_key
+                        await self.poll_pool_arbitrage_once(block_number=block_number)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Ethereum 新区块订阅中断，%s 秒后重连 │ 错误=%s",
+                    retry_seconds,
+                    exc,
+                )
+                await asyncio.sleep(retry_seconds)
+                retry_seconds = min(retry_seconds * 2, 30)
+
+    async def poll_pool_arbitrage_once(
+        self,
+        block_number: int | None = None,
+    ) -> dict[str, object]:
+        if self._pool_arbitrage_lock.locked():
+            return {"status": "skipped", "reason": "pool arbitrage poll already in progress"}
+
+        async with self._pool_arbitrage_lock:
+            self.last_pool_arbitrage_errors = {}
             all_points: list[MetricPoint] = []
             try:
-                all_points = await self.finnhub_stock_collector.collect()
+                all_points = await self.pool_arbitrage_collector.collect(block_number=block_number)
             except Exception as exc:  # noqa: BLE001
-                logger.exception("Finnhub stock polling failed")
-                self.last_finnhub_stock_errors["finnhub_stock"] = str(exc)
+                logger.exception("Curve/v4 池间套利采集失败")
+                self.last_pool_arbitrage_errors["pool_arbitrage"] = str(exc)
 
             evaluation = await asyncio.to_thread(self._persist_and_evaluate, all_points)
             await self._send_notifications(
                 evaluation.notifications,
-                self.last_finnhub_stock_errors,
+                self.last_pool_arbitrage_errors,
             )
-
-            self.last_finnhub_stock_run_at = datetime.now(timezone.utc)
-            self.last_finnhub_stock_status = (
-                "partial_failure" if self.last_finnhub_stock_errors else "ok"
+            self.last_pool_arbitrage_run_at = datetime.now(timezone.utc)
+            self.last_pool_arbitrage_status = (
+                "partial_failure" if self.last_pool_arbitrage_errors else "ok"
             )
             return {
-                "status": self.last_finnhub_stock_status,
+                "status": self.last_pool_arbitrage_status,
                 "collected_metrics": len(all_points),
                 "alerts_touched": len(evaluation.events),
-                "errors": self.last_finnhub_stock_errors,
-                "last_run_at": self.last_finnhub_stock_run_at.isoformat(),
+                "errors": self.last_pool_arbitrage_errors,
+                "last_run_at": self.last_pool_arbitrage_run_at.isoformat(),
             }
 
     async def _collect_all(self) -> tuple[list[MetricPoint], dict[str, str]]:
+        collectors = list(self.collectors)
+        if self.is_crosschain_arbitrage_enabled():
+            collectors.append(self.arbitrage_collector)
         results = []
-        for collector in self.collectors:
+        for collector in collectors:
             results.append(await self._collect_one(collector))
         all_points: list[MetricPoint] = []
         errors: dict[str, str] = {}

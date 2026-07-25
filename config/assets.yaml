@@ -133,3 +133,17 @@ arbitrage_monitors:
     source_gas_usd: 0
     target_gas_usd: 0
     enabled: false
+
+pool_arbitrage_monitors:
+  - monitor_id: arb-apxusd-usdc-v4-curve
+    label: Ethereum apxUSD/USDC · Uniswap v4 ↔ Curve
+    chain: ethereum
+    curve_pool_address: "0xec19d5f427c56e5a2df1c620539ecd20a4d0a419"
+    v4_pool_id: "0x9f2d9491277a9f2551c1f7533c1789aa6023bba0c5e9397e8a019cac5c10fe7f"
+    v4_quoter_address: "0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203"
+    currency0_asset_id: apxusd-ethereum
+    currency1_asset_id: usdc-ethereum
+    fee: 500
+    tick_spacing: 10
+    notionals_usdc: [100000]
+    enabled: true

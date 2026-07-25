@@ -24,10 +24,18 @@ async def lifespan(app: FastAPI):
     app.state.scheduler = scheduler
     scheduler.start()
     asyncio.create_task(service.poll_once())
-    asyncio.create_task(service.poll_finnhub_stock_once())
+    asyncio.create_task(service.poll_pool_arbitrage_once())
+    pool_arbitrage_watch_task = (
+        asyncio.create_task(service.watch_pool_arbitrage_blocks())
+        if service.pool_arbitrage_ws_url
+        else None
+    )
     try:
         yield
     finally:
+        if pool_arbitrage_watch_task is not None:
+            pool_arbitrage_watch_task.cancel()
+            await asyncio.gather(pool_arbitrage_watch_task, return_exceptions=True)
         scheduler.shutdown(wait=False)
 
 

@@ -100,6 +100,18 @@ rules:
     notify_feishu: true
     enabled: true
 
+  - rule_id: pool_arb_net_profit_opportunity
+    description: Uniswap v4 与 Curve apxUSD/USDC 池间存在报价套利机会
+    entity_id: arb-apxusd-usdc-v4-curve
+    metric_name: best_net_profit_usd
+    comparator: gt
+    threshold: 25
+    severity: P1
+    cooldown_seconds: 300
+    required_consecutive_hits: 1
+    notify_feishu: true
+    enabled: true
+
   - rule_id: apxusd_redemption_spread_pct_floor
     description: APXUSD USDC buy price redemption spread percent below threshold
     entity_id: apxusd-market
