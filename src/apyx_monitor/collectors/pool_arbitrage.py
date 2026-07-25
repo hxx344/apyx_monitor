@@ -8,7 +8,13 @@ from datetime import datetime, timezone
 
 from web3 import Web3
 
-from ..config import AssetCatalog, AssetDefinition, PoolArbitrageMonitorDefinition, Settings
+from ..config import (
+    AssetCatalog,
+    AssetDefinition,
+    ChainDefinition,
+    PoolArbitrageMonitorDefinition,
+    Settings,
+)
 from .base import BaseCollector, MetricPoint
 from .onchain import CURVE_POOL_ABI
 
@@ -89,6 +95,9 @@ class PoolArbitrageCollector(BaseCollector):
     async def collect(self, block_number: int | None = None) -> list[MetricPoint]:
         return await asyncio.to_thread(self._collect, block_number)
 
+    def _resolve_rpc_url(self, chain: ChainDefinition) -> str:
+        return (self.settings.pool_arbitrage_rpc_url or "").strip() or chain.resolve_rpc_url()
+
     def _collect(self, block_number: int | None = None) -> list[MetricPoint]:
         asset_map = {asset.asset_id: asset for asset in self.catalog.assets}
         chain_map = self.catalog.chain_map()
@@ -104,7 +113,7 @@ class PoolArbitrageCollector(BaseCollector):
             if currency0 is None or currency1 is None:
                 raise ValueError(f"Pool arbitrage assets are missing for {monitor.monitor_id}")
 
-            rpc_url = chain_map[monitor.chain].resolve_rpc_url()
+            rpc_url = self._resolve_rpc_url(chain_map[monitor.chain])
             web3 = Web3(
                 Web3.HTTPProvider(
                     rpc_url, request_kwargs={"timeout": self.settings.http_timeout_seconds}

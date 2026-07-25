@@ -69,7 +69,14 @@ class Settings(BaseSettings):
     )
     feishu_webhook_url: Optional[str] = Field(default=None, alias="FEISHU_WEBHOOK_URL")
     feishu_secret: Optional[str] = Field(default=None, alias="FEISHU_SECRET")
-    ethereum_ws_url: Optional[str] = Field(default=None, alias="ETHEREUM_WS_URL")
+    pool_arbitrage_rpc_url: Optional[str] = Field(
+        default=None,
+        alias="POOL_ARBITRAGE_RPC_URL",
+    )
+    pool_arbitrage_ws_url: Optional[str] = Field(
+        default=None,
+        alias="POOL_ARBITRAGE_WS_URL",
+    )
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",

@@ -188,13 +188,10 @@ class MonitoringService:
 
     @property
     def pool_arbitrage_ws_url(self) -> str | None:
-        configured = (self.settings.ethereum_ws_url or "").strip()
+        configured = (self.settings.pool_arbitrage_ws_url or "").strip()
         if configured:
             return configured
-        ethereum = self.asset_catalog.chain_map().get("ethereum")
-        if ethereum is None:
-            return None
-        rpc_url = ethereum.resolve_rpc_url()
+        rpc_url = (self.settings.pool_arbitrage_rpc_url or "").strip()
         parsed = urlsplit(rpc_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             return None

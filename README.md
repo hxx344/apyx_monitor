@@ -56,6 +56,14 @@ uvicorn apyx_monitor.main:app --reload
 - `POST /api/v1/jobs/arbitrage`
 - `POST /api/v1/jobs/pool-arbitrage`
 
+Curve/v4 池间套利可以单独使用 Alchemy RPC，不影响其他采集器原有的链 RPC。
+在 `.env` 中填写：
+
+```env
+POOL_ARBITRAGE_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY
+POOL_ARBITRAGE_WS_URL=wss://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY
+```
+
 ### Dashboard 登录
 
 访问 `/dashboard` 会先跳转到登录页。默认账号密码请在 `.env` 中配置：

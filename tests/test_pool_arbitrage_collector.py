@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from apyx_monitor.collectors.pool_arbitrage import (
     CURVE_BUY_V4_SELL,
@@ -8,7 +9,7 @@ from apyx_monitor.collectors.pool_arbitrage import (
     PoolArbitrageCollector,
     PoolArbitrageQuote,
 )
-from apyx_monitor.config import PoolArbitrageMonitorDefinition
+from apyx_monitor.config import PoolArbitrageMonitorDefinition, Settings
 
 
 def _monitor() -> PoolArbitrageMonitorDefinition:
@@ -64,3 +65,39 @@ def test_quote_metrics_keep_negative_best_for_no_opportunity_state() -> None:
     best = next(metric for metric in metrics if metric.metric_name == "best_net_profit_usd")
 
     assert best.value == -1.0
+
+
+def test_pool_arbitrage_uses_dedicated_rpc_without_changing_chain_rpc() -> None:
+    chain = SimpleNamespace(resolve_rpc_url=lambda: "https://original-rpc.example")
+    collector = object.__new__(PoolArbitrageCollector)
+    collector.settings = SimpleNamespace(
+        pool_arbitrage_rpc_url="https://eth-mainnet.g.alchemy.com/v2/test-key"
+    )
+
+    assert (
+        collector._resolve_rpc_url(chain)
+        == "https://eth-mainnet.g.alchemy.com/v2/test-key"
+    )
+    assert chain.resolve_rpc_url() == "https://original-rpc.example"
+
+
+def test_pool_arbitrage_falls_back_to_original_chain_rpc() -> None:
+    chain = SimpleNamespace(resolve_rpc_url=lambda: "https://original-rpc.example")
+    collector = object.__new__(PoolArbitrageCollector)
+    collector.settings = SimpleNamespace(pool_arbitrage_rpc_url="")
+
+    assert collector._resolve_rpc_url(chain) == "https://original-rpc.example"
+
+
+def test_pool_arbitrage_rpc_settings_load_from_dotenv(tmp_path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "POOL_ARBITRAGE_RPC_URL=https://alchemy-http.example\n"
+        "POOL_ARBITRAGE_WS_URL=wss://alchemy-ws.example\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings(_env_file=env_path)
+
+    assert settings.pool_arbitrage_rpc_url == "https://alchemy-http.example"
+    assert settings.pool_arbitrage_ws_url == "wss://alchemy-ws.example"
