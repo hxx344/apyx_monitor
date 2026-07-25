@@ -140,6 +140,7 @@ pool_arbitrage_monitors:
     chain: ethereum
     curve_pool_address: "0xec19d5f427c56e5a2df1c620539ecd20a4d0a419"
     v4_pool_id: "0x9f2d9491277a9f2551c1f7533c1789aa6023bba0c5e9397e8a019cac5c10fe7f"
+    v4_pool_manager_address: "0x000000000004444c5dc75cB358380D2e3dE08A90"
     v4_quoter_address: "0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203"
     currency0_asset_id: apxusd-ethereum
     currency1_asset_id: usdc-ethereum

@@ -24,6 +24,39 @@ def test_arbitrage_poll_skips_collector_when_monitor_is_disabled():
     asyncio.run(_run_arbitrage_poll_skips_collector_when_monitor_is_disabled_test())
 
 
+def test_pool_arbitrage_log_filters_target_only_configured_pools():
+    service = MonitoringService()
+    monitor = next(
+        monitor for monitor in service.asset_catalog.pool_arbitrage_monitors if monitor.enabled
+    )
+
+    filters = service.pool_arbitrage_log_filters()
+
+    assert filters == [
+        {"address": monitor.curve_pool_address.lower()},
+        {
+            "address": monitor.v4_pool_manager_address.lower(),
+            "topics": [None, monitor.v4_pool_id.lower()],
+        },
+    ]
+
+
+def test_pool_arbitrage_event_block_parses_log_and_skips_removed_logs():
+    payload = {
+        "params": {
+            "result": {
+                "blockNumber": "0x2a",
+                "blockHash": "0xabc",
+                "removed": False,
+            }
+        }
+    }
+
+    assert MonitoringService._pool_arbitrage_event_block(payload) == (42, "0xabc")
+    payload["params"]["result"]["removed"] = True
+    assert MonitoringService._pool_arbitrage_event_block(payload) is None
+
+
 async def _run_arbitrage_poll_skips_collector_when_monitor_is_disabled_test():
     class FailingArbitrageCollector:
         async def collect(self, **kwargs):

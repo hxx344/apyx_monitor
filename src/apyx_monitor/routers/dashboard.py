@@ -860,7 +860,13 @@ def _render_threshold_controls(
                         continue
                 metric = latest_map.get((rule.entity_id, rule.metric_name))
                 current_value = metric.value if metric else None
-                input_step = "1000" if rule.metric_name.endswith("_usd") else "0.1"
+                input_step = (
+                    "0.01"
+                    if rule.metric_name == "best_net_profit_usd"
+                    else "1000"
+                    if rule.metric_name.endswith("_usd")
+                    else "0.1"
+                )
                 input_min = "0"
                 unit_label = "USD" if rule.metric_name.endswith("_usd") else "%"
                 rows.append(
@@ -869,7 +875,7 @@ def _render_threshold_controls(
                             <input type="hidden" name="rule_id" value="{escape(rule.rule_id)}" />
                             <input type="hidden" name="hours" value="{hours}" />
                             <div class="threshold-title">{escape(rule.description)}</div>
-                            <div class="threshold-meta">告警条件：当前值 {escape(operator_label.get(rule.comparator, rule.comparator))} 阈值时记录告警；仅闭环套利利润率规则发送飞书</div>
+                            <div class="threshold-meta">告警条件：当前值 {escape(operator_label.get(rule.comparator, rule.comparator))} 阈值时记录告警；套利机会规则会发送飞书</div>
                             <div class="threshold-stats">
                                 <div><span>当前值</span><strong>{escape(_format_value(rule.metric_name, current_value))}</strong></div>
                                 <div><span>当前阈值</span><strong>{escape(_format_value(rule.metric_name, rule.threshold))}</strong></div>
@@ -888,7 +894,7 @@ def _render_threshold_controls(
         if not rows and not redemption_pct_controls:
                 return ""
 
-        banner = '<div class="flash success">告警阈值已更新，后续采集会按新阈值触发；闭环套利和 Redemption 当前百分比规则会发送飞书。</div>' if threshold_updated else ""
+        banner = '<div class="flash success">告警阈值已更新，后续采集会按新阈值触发；套利机会和 Redemption 当前百分比规则会发送飞书。</div>' if threshold_updated else ""
         return f'''
         <div class="panel full threshold-panel">
             <div class="panel-head">

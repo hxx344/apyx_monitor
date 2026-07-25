@@ -43,7 +43,7 @@ def build_scheduler(service: MonitoringService) -> AsyncIOScheduler:
         scheduler.add_job(
             service.poll_pool_arbitrage_once,
             "interval",
-            seconds=max(5, settings.pool_arbitrage_interval_seconds),
+            seconds=max(60, settings.pool_arbitrage_fallback_interval_seconds),
             id="apyx-monitor-pool-arbitrage-poll",
             start_date=datetime.now(timezone.utc) + timedelta(seconds=5),
             max_instances=1,

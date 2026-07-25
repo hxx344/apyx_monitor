@@ -28,9 +28,9 @@ class Settings(BaseSettings):
     )
     nav_curve_interval_seconds: int = Field(default=20, alias="NAV_CURVE_INTERVAL_SECONDS")
     arbitrage_interval_seconds: int = Field(default=600, alias="ARBITRAGE_INTERVAL_SECONDS")
-    pool_arbitrage_interval_seconds: int = Field(
-        default=15,
-        alias="POOL_ARBITRAGE_INTERVAL_SECONDS",
+    pool_arbitrage_fallback_interval_seconds: int = Field(
+        default=600,
+        alias="POOL_ARBITRAGE_FALLBACK_INTERVAL_SECONDS",
     )
     crosschain_arbitrage_enabled: bool = Field(
         default=True,
@@ -163,6 +163,7 @@ class PoolArbitrageMonitorDefinition(BaseModel):
     chain: str = "ethereum"
     curve_pool_address: str
     v4_pool_id: str
+    v4_pool_manager_address: str = "0x000000000004444c5dc75cB358380D2e3dE08A90"
     v4_quoter_address: str
     currency0_asset_id: str
     currency1_asset_id: str

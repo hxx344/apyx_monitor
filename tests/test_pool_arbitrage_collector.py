@@ -93,7 +93,8 @@ def test_pool_arbitrage_rpc_settings_load_from_dotenv(tmp_path) -> None:
     env_path = tmp_path / ".env"
     env_path.write_text(
         "POOL_ARBITRAGE_RPC_URL=https://alchemy-http.example\n"
-        "POOL_ARBITRAGE_WS_URL=wss://alchemy-ws.example\n",
+        "POOL_ARBITRAGE_WS_URL=wss://alchemy-ws.example\n"
+        "POOL_ARBITRAGE_FALLBACK_INTERVAL_SECONDS=600\n",
         encoding="utf-8",
     )
 
@@ -101,3 +102,4 @@ def test_pool_arbitrage_rpc_settings_load_from_dotenv(tmp_path) -> None:
 
     assert settings.pool_arbitrage_rpc_url == "https://alchemy-http.example"
     assert settings.pool_arbitrage_ws_url == "wss://alchemy-ws.example"
+    assert settings.pool_arbitrage_fallback_interval_seconds == 600

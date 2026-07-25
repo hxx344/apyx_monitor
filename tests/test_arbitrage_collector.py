@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
 
@@ -28,6 +29,13 @@ from apyx_monitor.config import (
     Settings,
 )
 from apyx_monitor.models import MetricSnapshot
+
+
+def test_arbitrage_source_contains_no_known_mojibake_markers() -> None:
+    source = Path(arbitrage_module.__file__).read_text(encoding="utf-8")
+
+    for marker in ("鈹?", "", "寮€", "鍒嗛", "鎶ヤ"):
+        assert marker not in source
 
 
 def _asset(

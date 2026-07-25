@@ -199,10 +199,76 @@ class MonitoringService:
             return None
         return urlunsplit(("wss", parsed.netloc, parsed.path, parsed.query, parsed.fragment))
 
-    async def watch_pool_arbitrage_blocks(self) -> None:
+    def pool_arbitrage_log_filters(self) -> list[dict[str, object]]:
+        filters: list[dict[str, object]] = []
+        seen: set[tuple[str, str | None]] = set()
+        for monitor in self.asset_catalog.pool_arbitrage_monitors:
+            if not monitor.enabled:
+                continue
+            curve_address = monitor.curve_pool_address.lower()
+            curve_key = (curve_address, None)
+            if curve_key not in seen:
+                filters.append({"address": curve_address})
+                seen.add(curve_key)
+
+            manager_address = monitor.v4_pool_manager_address.lower()
+            pool_id = monitor.v4_pool_id.lower()
+            v4_key = (manager_address, pool_id)
+            if v4_key not in seen:
+                filters.append(
+                    {
+                        "address": manager_address,
+                        "topics": [None, pool_id],
+                    }
+                )
+                seen.add(v4_key)
+        return filters
+
+    async def _subscribe_pool_arbitrage_logs(self, socket) -> int:
+        filters = self.pool_arbitrage_log_filters()
+        if not filters:
+            raise RuntimeError("no enabled Curve/v4 pool monitors")
+
+        pending_ids = set(range(1, len(filters) + 1))
+        for request_id, log_filter in enumerate(filters, start=1):
+            await socket.send(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "eth_subscribe",
+                        "params": ["logs", log_filter],
+                    }
+                )
+            )
+
+        while pending_ids:
+            response = json.loads(await socket.recv())
+            request_id = response.get("id")
+            if request_id not in pending_ids:
+                continue
+            if response.get("error"):
+                raise RuntimeError(str(response["error"]))
+            if not response.get("result"):
+                raise RuntimeError(f"empty subscription id for request {request_id}")
+            pending_ids.remove(request_id)
+        return len(filters)
+
+    @staticmethod
+    def _pool_arbitrage_event_block(payload: dict) -> tuple[int, str] | None:
+        event = payload.get("params", {}).get("result", {})
+        if not isinstance(event, dict) or event.get("removed"):
+            return None
+        block_number_hex = event.get("blockNumber")
+        if not isinstance(block_number_hex, str):
+            return None
+        return int(block_number_hex, 16), str(event.get("blockHash") or "")
+
+    async def watch_pool_arbitrage_events(self) -> None:
         ws_url = self.pool_arbitrage_ws_url
         if not ws_url:
             return
+        fallback_seconds = max(60, self.settings.pool_arbitrage_fallback_interval_seconds)
         retry_seconds = 1
         while True:
             try:
@@ -212,39 +278,38 @@ class MonitoringService:
                     ping_interval=20,
                     ping_timeout=20,
                 ) as socket:
-                    await socket.send(
-                        json.dumps(
-                            {
-                                "jsonrpc": "2.0",
-                                "id": 1,
-                                "method": "eth_subscribe",
-                                "params": ["newHeads"],
-                            }
-                        )
-                    )
-                    subscription = json.loads(await socket.recv())
-                    if subscription.get("error"):
-                        raise RuntimeError(str(subscription["error"]))
+                    subscription_count = await self._subscribe_pool_arbitrage_logs(socket)
                     retry_seconds = 1
-                    logger.info("Curve/v4 套利监控已订阅 Ethereum 新区块")
-                    async for raw_message in socket:
+                    logger.info(
+                        "Curve/v4 套利监控已订阅池状态日志 │ 订阅数=%s │ 兜底=%s秒",
+                        subscription_count,
+                        fallback_seconds,
+                    )
+                    await self.poll_pool_arbitrage_once()
+
+                    while True:
+                        try:
+                            raw_message = await asyncio.wait_for(
+                                socket.recv(),
+                                timeout=fallback_seconds,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.info("Curve/v4 池状态无变化，执行定时兜底刷新")
+                            await self.poll_pool_arbitrage_once()
+                            continue
+
                         payload = json.loads(raw_message)
-                        header = payload.get("params", {}).get("result", {})
-                        number_hex = header.get("number")
-                        block_hash = str(header.get("hash") or "")
-                        if not number_hex:
+                        block_key = self._pool_arbitrage_event_block(payload)
+                        if block_key is None or block_key == self._last_pool_arbitrage_block:
                             continue
-                        block_number = int(number_hex, 16)
-                        block_key = (block_number, block_hash)
-                        if block_key == self._last_pool_arbitrage_block:
-                            continue
-                        self._last_pool_arbitrage_block = block_key
-                        await self.poll_pool_arbitrage_once(block_number=block_number)
+                        result = await self.poll_pool_arbitrage_once(block_number=block_key[0])
+                        if result.get("status") != "skipped":
+                            self._last_pool_arbitrage_block = block_key
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "Ethereum 新区块订阅中断，%s 秒后重连 │ 错误=%s",
+                    "Curve/v4 池状态订阅中断，%s 秒后重连 │ 错误=%s",
                     retry_seconds,
                     exc,
                 )

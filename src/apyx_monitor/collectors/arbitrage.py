@@ -197,7 +197,7 @@ class ArbitrageCollector(BaseCollector):
                 [funding_asset, settlement_apxusd, settlement_apyusd, remote_apxusd, remote_apyusd]
             ):
                 logger.warning(
-                    "璺宠繃濂楀埄璺緞 鈹?鍘熷洜=璧勪骇閰嶇疆缂哄け 鈹?璺緞=%s",
+                    "跳过套利路径 │ 原因=资产配置缺失 │ 路径=%s",
                     monitor.monitor_id,
                 )
                 continue
@@ -270,7 +270,7 @@ class ArbitrageCollector(BaseCollector):
                 started_at=now,
             )
             logger.info(
-                "寮€濮嬪垎闃舵鍒锋柊濂楀埄璺緞 鈹?璺緞=%s 鈹?闃舵=1/3 鈹?杩涘害=%s/%s",
+                "开始分阶段刷新套利路径 │ 路径=%s │ 阶段=1/3 │ 进度=%s/%s",
                 monitor.monitor_id,
                 selected_index + 1,
                 len(monitor_contexts),
@@ -303,7 +303,7 @@ class ArbitrageCollector(BaseCollector):
                     else BUY_TARGET_SELL_SOURCE
                 )
                 logger.info(
-                    "鍒嗛樁娈靛埛鏂板鍒╄矾寰?鈹?璺緞=%s 鈹?闃舵=%s/3 鈹?绛栫暐=%s 鈹?API棰勭畻=3",
+                    "分阶段刷新套利路径 │ 路径=%s │ 阶段=%s/3 │ 策略=%s │ API预算=3",
                     monitor.monitor_id,
                     cycle.stage_index + 1,
                     strategy_id,
@@ -325,7 +325,7 @@ class ArbitrageCollector(BaseCollector):
                     )
                 except QuoteRateLimitedError as exc:
                     logger.warning(
-                        "濂楀埄鎶ヤ环鏆傚仠 鈹?鍘熷洜=鍏ㄩ儴鎶ヤ环婧愰檺娴?鈹?璺緞=%s 鈹?绛栫暐=%s 鈹?鏈噾=$%s 鈹?璇︽儏=%s",
+                        "套利报价暂停 │ 原因=全部报价源限流 │ 路径=%s │ 策略=%s │ 本金=$%s │ 详情=%s",
                         monitor.monitor_id,
                         strategy_id,
                         cycle.notional_usd,
@@ -337,7 +337,7 @@ class ArbitrageCollector(BaseCollector):
                     )
                 except QuoteRouteUnavailableError as exc:
                     logger.warning(
-                        "璺宠繃濂楀埄鏍锋湰 鈹?鍘熷洜=鎶ヤ环璺緞涓嶅彲鐢?鈹?璺緞=%s 鈹?绛栫暐=%s 鈹?鏈噾=$%s 鈹?璇︽儏=%s",
+                        "跳过套利样本 │ 原因=报价路径不可用 │ 路径=%s │ 策略=%s │ 本金=$%s │ 详情=%s",
                         monitor.monitor_id,
                         strategy_id,
                         cycle.notional_usd,
@@ -350,7 +350,7 @@ class ArbitrageCollector(BaseCollector):
                     )
                 except Exception:  # noqa: BLE001
                     logger.exception(
-                        "濂楀埄鏍锋湰璁＄畻澶辫触 鈹?璺緞=%s 鈹?绛栫暐=%s 鈹?鏈噾=$%s",
+                        "套利样本计算失败 │ 路径=%s │ 策略=%s │ 本金=$%s",
                         monitor.monitor_id,
                         strategy_id,
                         cycle.notional_usd,
@@ -379,7 +379,7 @@ class ArbitrageCollector(BaseCollector):
                         best_candidates=list(self._latest_samples.values()),
                     )
                 logger.info(
-                    "鍒嗛樁娈靛埛鏂板鍒╄矾寰?鈹?璺緞=%s 鈹?闃舵=3/3 鈹?绛栫暐=%s 鈹?API棰勭畻=1",
+                    "分阶段刷新套利路径 │ 路径=%s │ 阶段=3/3 │ 策略=%s │ API预算=1",
                     monitor.monitor_id,
                     best_sample.strategy_id,
                 )
@@ -400,7 +400,7 @@ class ArbitrageCollector(BaseCollector):
                     )
                 except QuoteRateLimitedError as exc:
                     logger.warning(
-                        "濂楀埄鎶ヤ环鏆傚仠 鈹?鍘熷洜=apxUSD闂幆鎶ヤ环闄愭祦 鈹?璺緞=%s 鈹?绛栫暐=%s 鈹?璇︽儏=%s",
+                        "套利报价暂停 │ 原因=apxUSD闭环报价限流 │ 路径=%s │ 策略=%s │ 详情=%s",
                         monitor.monitor_id,
                         best_sample.strategy_id,
                         exc,
@@ -497,7 +497,7 @@ class ArbitrageCollector(BaseCollector):
                 continue
             except QuoteRouteUnavailableError as exc:
                 logger.info(
-                    "鎶ヤ环璺緞涓嶅彲鐢?鈹?鏉ユ簮=%s 鈹?鍔ㄤ綔=鍒囨崲涓嬩竴涓潵婧愰噸璇?鈹?璇︽儏=%s",
+                    "报价路径不可用 │ 来源=%s │ 动作=切换下一个来源重试 │ 详情=%s",
                     quote_provider,
                     exc,
                 )
@@ -1194,7 +1194,7 @@ class ArbitrageCollector(BaseCollector):
             response = await client.post(f"{PENDLE_SDK_BASE_URL}/{chain_id}/convert", json=payload)
         except httpx.TimeoutException as exc:
             raise QuoteRouteUnavailableError(
-                f"PendleSwap 鎶ヤ环瓒呮椂: chain={chain_id} token_in={token_in} token_out={token_out}"
+                f"PendleSwap 报价超时: chain={chain_id} token_in={token_in} token_out={token_out}"
             ) from exc
         if response.status_code == 429:
             retry_after = (
@@ -1252,7 +1252,7 @@ class ArbitrageCollector(BaseCollector):
             response = await client.get(JUMPER_QUOTE_URL, params=params)
         except httpx.TimeoutException as exc:
             raise QuoteRouteUnavailableError(
-                f"Jumper 鎶ヤ环瓒呮椂: chain={chain_id} token_in={token_in} token_out={token_out}"
+                f"Jumper 报价超时: chain={chain_id} token_in={token_in} token_out={token_out}"
             ) from exc
         if response.status_code == 429:
             retry_after = self._retry_after_seconds(response) or QUOTE_PROVIDER_COOLDOWN_SECONDS
@@ -1313,7 +1313,7 @@ class ArbitrageCollector(BaseCollector):
             response = await client.get(VELORA_PRICE_URL, params=params)
         except httpx.TimeoutException as exc:
             raise QuoteRouteUnavailableError(
-                f"Velora 鎶ヤ环瓒呮椂: chain={chain_id} token_in={token_in} token_out={token_out}"
+                f"Velora 报价超时: chain={chain_id} token_in={token_in} token_out={token_out}"
             ) from exc
         if response.status_code == 429:
             retry_after = self._retry_after_seconds(response) or QUOTE_PROVIDER_COOLDOWN_SECONDS
@@ -1465,7 +1465,7 @@ class ArbitrageCollector(BaseCollector):
 
         amount_out_raw = amount_in_raw * reverse_quote.amount_in_raw // reverse_quote.amount_out_raw
         logger.warning(
-            "浣跨敤鍙嶅悜鎶ヤ环鍏滃簳 鈹?浜ゆ槗=%s -> %s 鈹?閾?%s 鈹?鍘熺姸鎬?%s",
+            "使用反向报价兜底 │ 交易=%s -> %s │ 链=%s │ 原状态=%s",
             token_in,
             token_out,
             chain_id,

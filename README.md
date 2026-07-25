@@ -106,7 +106,7 @@ uvicorn apyx_monitor.main:app --host 0.0.0.0 --port 8000 --workers 1
 - 采集间隔由 `COLLECTION_INTERVAL_SECONDS` 控制，默认每 60 秒采集一次。过低的间隔会增加 RPC/API 压力和数据库写入压力。
 - NAV/Curve 快速扫描由 `NAV_CURVE_INTERVAL_SECONDS` 控制，默认每 20 秒采集一次 `apyUSD convertToAssets()`、Curve `get_dy()` 和偏离净值指标，不会额外请求 Pendle/Morpho。
 - 闭环套利除 Curve/NAV 变化触发外，还会由 `ARBITRAGE_INTERVAL_SECONDS` 定时强制触发一次，默认每 600 秒（10 分钟）执行；看板也提供“刷新套利计算”按钮手动触发。
-- Curve/v4 池间套利固定计算 100,000 USDC 本金的两个方向；配置 Alchemy WebSocket 后由每个 Ethereum 新区块触发，否则按 `POOL_ARBITRAGE_INTERVAL_SECONDS` 定时回退。报价利润不扣除 gas。
+- Curve/v4 池间套利固定计算 100,000 USDC 本金的两个方向；配置 Alchemy WebSocket 后，仅在目标 Curve 池或 v4 PoolManager 的目标 `poolId` 产生状态变更日志时触发，同一区块只刷新一次，并按 `POOL_ARBITRAGE_FALLBACK_INTERVAL_SECONDS`（默认 600 秒）兜底。报价利润不扣除 gas。
 - 每次发版后需要重启服务，让数据库 PRAGMA、索引和新代码生效。
 
 ### 启动后检查

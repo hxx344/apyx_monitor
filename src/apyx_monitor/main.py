@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(service.poll_once())
     asyncio.create_task(service.poll_pool_arbitrage_once())
     pool_arbitrage_watch_task = (
-        asyncio.create_task(service.watch_pool_arbitrage_blocks())
+        asyncio.create_task(service.watch_pool_arbitrage_events())
         if service.pool_arbitrage_ws_url
         else None
     )
