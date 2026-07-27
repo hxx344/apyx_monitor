@@ -25,6 +25,21 @@ CURVE_BUY_V4_SELL = "curve-buy-v4-sell"
 V4_BUY_CURVE_SELL = "v4-buy-curve-sell"
 POOL_ARBITRAGE_DIRECTIONS = (CURVE_BUY_V4_SELL, V4_BUY_CURVE_SELL)
 
+# RPC providers can return a full ABI-encoded revert payload (often thousands
+# of repeated zeroes). Keep enough context for diagnosis without allowing a
+# single quote failure to produce an unbounded console/log line.
+def _compact_quote_error(exc: Exception, limit: int = 240) -> str:
+    error_type = type(exc).__name__
+    message = str(exc).strip() or repr(exc)
+    prefix = f"{error_type}: "
+    if len(prefix) + len(message) <= limit:
+        return prefix + message
+    suffix = f" (原始错误长度={len(message)})"
+    payload_budget = max(2, limit - len(prefix) - len(suffix) - 3)
+    head = max(1, payload_budget // 2)
+    tail = max(1, payload_budget - head)
+    return f"{prefix}{message[:head]}...{message[-tail:]}{suffix}"[:limit]
+
 V4_QUOTER_ABI = [
     {
         "type": "function",
@@ -161,7 +176,7 @@ class PoolArbitrageCollector(BaseCollector):
                             monitor.monitor_id,
                             direction,
                             notional,
-                            exc,
+                            _compact_quote_error(exc),
                         )
 
         if enabled_monitors and not all_quotes:

@@ -8,6 +8,7 @@ from apyx_monitor.collectors.pool_arbitrage import (
     V4_BUY_CURVE_SELL,
     PoolArbitrageCollector,
     PoolArbitrageQuote,
+    _compact_quote_error,
 )
 from apyx_monitor.config import PoolArbitrageMonitorDefinition, Settings
 
@@ -103,3 +104,13 @@ def test_pool_arbitrage_rpc_settings_load_from_dotenv(tmp_path) -> None:
     assert settings.pool_arbitrage_rpc_url == "https://alchemy-http.example"
     assert settings.pool_arbitrage_ws_url == "wss://alchemy-ws.example"
     assert settings.pool_arbitrage_fallback_interval_seconds == 600
+
+
+def test_compact_quote_error_preserves_type_and_bounds_rpc_payload() -> None:
+    error = ValueError("0x" + "00" * 1000)
+
+    compacted = _compact_quote_error(error)
+
+    assert len(compacted) <= 240
+    assert compacted.startswith("ValueError: 0x")
+    assert "原始错误长度=" in compacted
