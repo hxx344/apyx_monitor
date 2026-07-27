@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -32,6 +33,10 @@ def _compact_quote_error(exc: Exception, limit: int = 240) -> str:
     error_type = type(exc).__name__
     message = str(exc).strip() or repr(exc)
     prefix = f"{error_type}: "
+    hex_values = re.findall(r"0x[0-9a-fA-F]+", message)
+    hex_length = sum(len(value) for value in hex_values)
+    if len(message) > limit and hex_values and hex_length / len(message) >= 0.7:
+        return f"{prefix}hex payload omitted ({len(hex_values)} fields, {len(message)} chars)"
     if len(prefix) + len(message) <= limit:
         return prefix + message
     suffix = f" (原始错误长度={len(message)})"

@@ -112,5 +112,4 @@ def test_compact_quote_error_preserves_type_and_bounds_rpc_payload() -> None:
     compacted = _compact_quote_error(error)
 
     assert len(compacted) <= 240
-    assert compacted.startswith("ValueError: 0x")
-    assert "原始错误长度=" in compacted
+    assert compacted == "ValueError: hex payload omitted (1 fields, 2002 chars)"
